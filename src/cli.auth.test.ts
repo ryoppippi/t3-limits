@@ -14,285 +14,209 @@ function runCliEffect(
   return Effect.runPromise(runCli(args, dependencies));
 }
 
-describe("t3-limits auth commands", () => {
-  it("discovers the origin, issues a scoped token only on login, and stores it for that origin", async () => {
-    const home = await mkdtemp(join(tmpdir(), "t3-limits-auth-"));
-    const runtimeDir = join(home, ".t3", "userdata");
-    await mkdir(runtimeDir, { recursive: true });
-    await Bun.write(
-      join(runtimeDir, "server-runtime.json"),
-      JSON.stringify({ origin: "ws://localhost:8318/" }),
-    );
-    let written:
-      | {
-          readonly service: string;
-          readonly name: string;
-          readonly value: string;
-        }
-      | undefined;
-    let command: readonly string[] = [];
-    const dependencies = {
-      env: {},
-      secrets: {
-        get: async () => null,
-        set: async (secret: {
-          readonly service: string;
-          readonly name: string;
-          readonly value: string;
-        }) => {
-          written = secret;
-        },
-        delete: async () => true,
-      },
-      readFile: async () => "",
-      spawn: (args: readonly string[]) => {
-        command = args;
-        return {
-          stdout:
-            new Response("scoped-token\n").body ??
-            new ReadableStream<Uint8Array>(),
-          exited: Promise.resolve(0),
-          kill: () => {},
-        };
-      },
-    } satisfies NonNullable<Parameters<typeof runCli>[1]>;
+async function makeHome(origin = "ws://localhost:8318/"): Promise<string> {
+  const home = await mkdtemp(join(tmpdir(), "t3-limits-auth-"));
+  const runtimeDir = join(home, ".t3", "userdata");
+  await mkdir(runtimeDir, { recursive: true });
+  await Bun.write(
+    join(runtimeDir, "server-runtime.json"),
+    JSON.stringify({ origin }),
+  );
+  return home;
+}
 
-    try {
-      await runCliEffect(
-        ["auth", "login", "--home", home, "--t3-bin", "/installed/t3"],
-        dependencies,
-      );
-      expect(command[0]).toBe("/installed/t3");
-      expect(command).toContain("orchestration:read");
-      expect(command).toContain("1h");
-      expect(command).toContain("--token-only");
-      expect(written).toEqual({
-        service: "com.ryoppippi.t3-limits",
-        name: "http://localhost:8318",
-        value: "scoped-token",
-      });
-    } finally {
-      await rm(home, { recursive: true, force: true });
-    }
-  });
-
-  it("does not mint for an explicitly empty token and logout only removes local storage", async () => {
-    let deleteKey:
-      { readonly service: string; readonly name: string } | undefined;
-    let spawned = false;
-    const dependencies = {
-      env: { T3_LIMITS_TOKEN: "" },
-      secrets: {
-        get: async () => null,
-        set: async () => {},
-        delete: async (key: {
-          readonly service: string;
-          readonly name: string;
-        }) => {
-          deleteKey = key;
-          return true;
-        },
-      },
-      readFile: async () => "",
-      spawn: () => {
-        spawned = true;
-        throw new Error("must not mint");
-      },
-    } satisfies NonNullable<Parameters<typeof runCli>[1]>;
-
-    await expect(
-      runCliEffect(["--url", "http://127.0.0.1:8318"], dependencies),
-    ).rejects.toThrow("T3_LIMITS_TOKEN is set but empty.");
-    expect(spawned).toBe(false);
-    await runCliEffect(
-      ["auth", "logout", "--url", "ws://localhost:80"],
-      dependencies,
-    );
-    expect(deleteKey).toEqual({
-      service: "com.ryoppippi.t3-limits",
-      name: "http://localhost",
-    });
-  });
-
-  it("does not allow login with a URL override", async () => {
-    let credentialReads = 0;
-    let fileReads = 0;
-    let processSpawns = 0;
-    await expect(
-      runCliEffect(["auth", "login", "--url", "http://localhost:8318"], {
-        env: {},
-        secrets: {
-          get: async () => {
-            credentialReads += 1;
-            return null;
-          },
-          set: async () => {
-            credentialReads += 1;
-          },
-          delete: async () => {
-            credentialReads += 1;
-            return true;
-          },
-        },
-        readFile: async () => {
-          fileReads += 1;
-          return "";
-        },
-        spawn: () => {
-          processSpawns += 1;
-          throw new Error("must not spawn");
-        },
-      }),
-    ).rejects.toThrow("Invalid command-line arguments.");
-    expect(credentialReads).toBe(0);
-    expect(fileReads).toBe(0);
-    expect(processSpawns).toBe(0);
-  });
-
-  it("automatically issues and stores one token when the secret store has no token", async () => {
-    const home = await mkdtemp(join(tmpdir(), "t3-limits-auto-auth-"));
-    const runtimeDir = join(home, ".t3", "userdata");
-    await mkdir(runtimeDir, { recursive: true });
-    await Bun.write(
-      join(runtimeDir, "server-runtime.json"),
-      JSON.stringify({ origin: "ws://localhost:8318/" }),
-    );
-    let gets = 0;
-    let sets = 0;
-    let spawns = 0;
-    let stored:
-      | {
-          readonly service: string;
-          readonly name: string;
-          readonly value: string;
-        }
-      | undefined;
-    let requested:
-      { readonly origin: string; readonly token: string } | undefined;
-    const output: string[] = [];
+describe("live CLI authentication", () => {
+  it("issues a new one-minute scoped token for each retrieval and keeps it in memory", async () => {
+    const home = await makeHome();
+    const commands: (readonly string[])[] = [];
+    let tokenNumber = 0;
+    const requested: string[] = [];
     const originalLog = console.log;
-    console.log = (...values: unknown[]) => output.push(values.join(" "));
+    console.log = () => {};
     try {
-      await runCliEffect(["--home", home], {
+      const dependencies = {
         env: {},
-        secrets: {
-          get: async () => {
-            gets += 1;
-            return null;
-          },
-          set: async (secret) => {
-            sets += 1;
-            stored = secret;
-          },
-          delete: async () => true,
-        },
         readFile: async () => "unused",
-        spawn: () => {
-          spawns += 1;
+        spawn: (command: readonly string[]) => {
+          commands.push(command);
+          tokenNumber += 1;
           return {
             stdout:
-              new Response("auto-token\n").body ??
+              new Response(`token-${tokenNumber}\n`).body ??
               new ReadableStream<Uint8Array>(),
             exited: Promise.resolve(0),
             kill: () => {},
           };
         },
-        readUsageLimits: ({ origin, token }) =>
+        readUsageLimits: ({ token }: { readonly token: string }) =>
           Effect.sync(() => {
-            requested = { origin, token };
+            requested.push(token);
             return { providers: [], sources: [] };
           }),
-      });
+      } satisfies NonNullable<Parameters<typeof runCli>[1]>;
+
+      await runCliEffect(["--home", home], dependencies);
+      await runCliEffect(["--home", home], dependencies);
     } finally {
       console.log = originalLog;
       await rm(home, { recursive: true, force: true });
     }
 
-    expect(gets).toBe(1);
-    expect(spawns).toBe(1);
-    expect(sets).toBe(1);
-    expect(stored).toEqual({
-      service: "com.ryoppippi.t3-limits",
-      name: "http://localhost:8318",
-      value: "auto-token",
-    });
-    expect(requested).toEqual({
-      origin: "ws://localhost:8318/",
-      token: "auto-token",
-    });
-    expect(output.join("\n")).toContain("Usage limits retrieved");
+    expect(requested).toEqual(["token-1", "token-2"]);
+    expect(commands).toHaveLength(2);
+    for (const command of commands) {
+      expect(command[0]).toBe("t3");
+      expect(command).toContain("orchestration:read");
+      expect(command).toContain("1m");
+      expect(command).toContain("t3-limits");
+      expect(command).toContain("--token-only");
+      expect(command).toContain(join(home, ".t3"));
+    }
   });
 
-  it("does not issue on secret-store errors or when a stored token later fails RPC", async () => {
+  it("accepts only a nonempty absolute configured T3 CLI path", async () => {
+    const home = await makeHome();
+    let executable = "";
     let spawns = 0;
     const base = {
-      env: {},
-      secrets: {
-        get: async () => null,
-        set: async () => {},
-        delete: async () => true,
-      },
       readFile: async () => "unused",
-      spawn: () => {
+      spawn: (command: readonly string[]) => {
         spawns += 1;
+        executable = command[0] ?? "";
         return {
           stdout:
-            new Response("new-token").body ?? new ReadableStream<Uint8Array>(),
+            new Response("path-token").body ?? new ReadableStream<Uint8Array>(),
           exited: Promise.resolve(0),
           kill: () => {},
         };
       },
       readUsageLimits: () => Effect.succeed({ providers: [], sources: [] }),
-    } satisfies NonNullable<Parameters<typeof runCli>[1]>;
+    } satisfies Omit<NonNullable<Parameters<typeof runCli>[1]>, "env">;
+    try {
+      const originalLog = console.log;
+      console.log = () => {};
+      try {
+        await runCliEffect(["--home", home], {
+          ...base,
+          env: { T3CODE_CLI_PATH: "/custom/bin/t3" },
+        });
+      } finally {
+        console.log = originalLog;
+      }
 
-    await expect(
-      runCliEffect(["--url", "http://127.0.0.1:8318"], {
-        ...base,
-        secrets: {
-          ...base.secrets,
-          get: async () => {
-            throw new Error("private keychain detail");
-          },
+      expect(executable).toBe("/custom/bin/t3");
+      for (const value of ["", "./t3"]) {
+        await expect(
+          runCliEffect(["--home", home], {
+            ...base,
+            env: { T3CODE_CLI_PATH: value },
+          }),
+        ).rejects.toThrow("absolute executable path");
+      }
+      expect(spawns).toBe(1);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("does not issue or discover runtime state when explicit credentials are supplied", async () => {
+    let spawns = 0;
+    let fileReads = 0;
+    const originalLog = console.log;
+    console.log = () => {};
+    try {
+      const dependencies = {
+        env: { T3_LIMITS_TOKEN: "environment-token" },
+        readFile: async () => {
+          fileReads += 1;
+          return "file-token";
         },
-      }),
-    ).rejects.toThrow("Could not access the OS secret store.");
-    expect(spawns).toBe(0);
+        spawn: () => {
+          spawns += 1;
+          throw new Error("must not spawn");
+        },
+        readUsageLimits: () => Effect.succeed({ providers: [], sources: [] }),
+      } satisfies NonNullable<Parameters<typeof runCli>[1]>;
 
+      await runCliEffect(["--url", "http://127.0.0.1:8318"], dependencies);
+      await runCliEffect(
+        ["--url", "http://127.0.0.1:8318", "--token-file", "/token"],
+        dependencies,
+      );
+    } finally {
+      console.log = originalLog;
+    }
+
+    expect(spawns).toBe(0);
+    expect(fileReads).toBe(1);
+  });
+
+  it("does not issue a replacement when an explicit token is rejected by RPC", async () => {
+    let spawns = 0;
     await expect(
       runCliEffect(["--url", "http://127.0.0.1:8318"], {
-        ...base,
-        secrets: {
-          ...base.secrets,
-          get: async () => "expired-or-invalid-token",
+        env: { T3_LIMITS_TOKEN: "rejected-token" },
+        readFile: async () => "unused",
+        spawn: () => {
+          spawns += 1;
+          throw new Error("must not issue a replacement");
         },
         readUsageLimits: () =>
-          Effect.fail(new RpcFailure({ safeMessage: "RPC rejected token" })),
+          Effect.fail(new RpcFailure({ safeMessage: "rejected token detail" })),
       }),
-    ).rejects.toThrow("t3-limits auth login");
+    ).rejects.toThrow("Check the server connection and supplied credential.");
     expect(spawns).toBe(0);
   });
 
-  it("does not bootstrap for a URL override that differs from runtime state", async () => {
-    const home = await mkdtemp(join(tmpdir(), "t3-limits-url-guard-"));
-    const runtimeDir = join(home, ".t3", "userdata");
-    await mkdir(runtimeDir, { recursive: true });
-    await Bun.write(
-      join(runtimeDir, "server-runtime.json"),
-      JSON.stringify({ origin: "http://localhost:8318" }),
-    );
+  it("stops on empty, unreadable, or invalid explicit credentials without fallback", async () => {
     let spawns = 0;
-    let sets = 0;
+    const dependencies = {
+      env: { T3_LIMITS_TOKEN: "" },
+      readFile: async () => "file-token",
+      spawn: () => {
+        spawns += 1;
+        throw new Error("must not spawn");
+      },
+      readUsageLimits: () => Effect.succeed({ providers: [], sources: [] }),
+    } satisfies NonNullable<Parameters<typeof runCli>[1]>;
+
+    await expect(
+      runCliEffect(["--url", "http://127.0.0.1:8318"], dependencies),
+    ).rejects.toThrow("T3_LIMITS_TOKEN is set but empty.");
+    await expect(
+      runCliEffect(["--url", "http://127.0.0.1:8318", "--token-file", ""], {
+        ...dependencies,
+        env: {},
+      }),
+    ).rejects.toThrow("Expected a value after --token-file.");
+    await expect(
+      runCliEffect(
+        ["--url", "http://127.0.0.1:8318", "--token-file", "/missing"],
+        {
+          ...dependencies,
+          env: { T3_LIMITS_TOKEN: "environment-token" },
+          readFile: async () => {
+            throw new Error("private file path detail");
+          },
+        },
+      ),
+    ).rejects.toThrow("The token file could not be read.");
+    await expect(
+      runCliEffect(
+        ["--url", "http://127.0.0.1:8318", "--token-file", "/empty"],
+        { ...dependencies, env: {}, readFile: async () => " \n" },
+      ),
+    ).rejects.toThrow("The token file is empty.");
+    expect(spawns).toBe(0);
+  });
+
+  it("requires an automatic-issuance URL override to match runtime state", async () => {
+    const home = await makeHome("http://localhost:8318");
+    let spawns = 0;
     try {
       await expect(
         runCliEffect(["--url", "http://localhost:8319", "--home", home], {
           env: {},
-          secrets: {
-            get: async () => null,
-            set: async () => {
-              sets += 1;
-            },
-            delete: async () => true,
-          },
           readFile: async () => "unused",
           spawn: () => {
             spawns += 1;
@@ -305,82 +229,63 @@ describe("t3-limits auth commands", () => {
       await rm(home, { recursive: true, force: true });
     }
     expect(spawns).toBe(0);
-    expect(sets).toBe(0);
   });
 
-  it("does not bootstrap when explicit environment or file credentials are supplied", async () => {
-    let spawns = 0;
-    let secretReads = 0;
-    const dependencies = {
-      env: { T3_LIMITS_TOKEN: "explicit-env-token" },
-      secrets: {
-        get: async () => {
-          secretReads += 1;
-          return null;
-        },
-        set: async () => {},
-        delete: async () => true,
-      },
-      readFile: async () => "explicit-file-token",
-      spawn: () => {
-        spawns += 1;
-        throw new Error("must not issue");
-      },
-      readUsageLimits: () => Effect.succeed({ providers: [], sources: [] }),
-    } satisfies NonNullable<Parameters<typeof runCli>[1]>;
-
-    await runCliEffect(["--url", "http://127.0.0.1:8318"], dependencies);
-    await runCliEffect(
-      ["--url", "http://127.0.0.1:8318", "--token-file", "/token"],
-      dependencies,
-    );
-    expect(spawns).toBe(0);
-    expect(secretReads).toBe(0);
-  });
-
-  it("rejects an unknown auth flag without echoing it", async () => {
-    await expect(
-      runCliEffect(["auth", "login", "--untrusted-flag"]),
-    ).rejects.toThrow("Invalid command-line arguments.");
-    await expect(
-      runCliEffect(["auth", "login", "--untrusted-flag"]),
-    ).rejects.not.toThrow("--untrusted-flag");
-  });
-
-  it("rejects empty and relative configured executables before issuing", async () => {
-    const home = await mkdtemp(join(tmpdir(), "t3-limits-executable-"));
-    const runtimeDir = join(home, ".t3", "userdata");
-    await mkdir(runtimeDir, { recursive: true });
-    await Bun.write(
-      join(runtimeDir, "server-runtime.json"),
-      JSON.stringify({ origin: "http://localhost:8318" }),
-    );
+  it("does not retry issuance after an RPC failure and redacts the cause", async () => {
+    const home = await makeHome("http://127.0.0.1:8318");
     let spawns = 0;
     try {
-      for (const executable of ["", "./untrusted/t3"]) {
-        const dependencies = {
-          env: { T3CODE_CLI_PATH: executable },
-          secrets: {
-            get: async () => null,
-            set: async () => {},
-            delete: async () => true,
-          },
-          readFile: async () => "",
-          spawn: () => {
-            spawns += 1;
-            throw new Error("must not spawn");
-          },
-        } satisfies NonNullable<Parameters<typeof runCli>[1]>;
-        await expect(
-          runCliEffect(["--home", home], dependencies),
-        ).rejects.toThrow("absolute executable path");
-        await expect(
-          runCliEffect(["auth", "login", "--home", home], dependencies),
-        ).rejects.toThrow("absolute executable path");
-      }
-      expect(spawns).toBe(0);
+      const failure = await runCliEffect(["--home", home], {
+        env: {},
+        readFile: async () => "unused",
+        spawn: () => {
+          spawns += 1;
+          return {
+            stdout:
+              new Response("issued-token").body ??
+              new ReadableStream<Uint8Array>(),
+            exited: Promise.resolve(0),
+            kill: () => {},
+          };
+        },
+        readUsageLimits: () =>
+          Effect.fail(new RpcFailure({ safeMessage: "private RPC detail" })),
+      }).then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      expect(String(failure)).toContain(
+        "Check the server connection and supplied credential.",
+      );
+      expect(String(failure)).not.toContain("private RPC detail");
     } finally {
       await rm(home, { recursive: true, force: true });
     }
+    expect(spawns).toBe(1);
+  });
+
+  it("rejects removed auth commands before touching files or spawning", async () => {
+    let fileReads = 0;
+    let spawns = 0;
+    const dependencies = {
+      env: {},
+      readFile: async () => {
+        fileReads += 1;
+        return "unused";
+      },
+      spawn: () => {
+        spawns += 1;
+        throw new Error("must not spawn");
+      },
+    } satisfies NonNullable<Parameters<typeof runCli>[1]>;
+
+    await expect(runCliEffect(["auth", "login"], dependencies)).rejects.toThrow(
+      "Unexpected positional argument",
+    );
+    await expect(
+      runCliEffect(["auth", "logout"], dependencies),
+    ).rejects.toThrow("Unexpected positional argument");
+    expect(fileReads).toBe(0);
+    expect(spawns).toBe(0);
   });
 });
