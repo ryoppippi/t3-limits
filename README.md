@@ -28,8 +28,7 @@ users can see it in the process list for the few seconds it is valid.
 
 ## JSON output
 
-`nix run . -- --json --fixture fixtures/get-config.json` prints
-(abridged; see [`fixtures/expected.json`](fixtures/expected.json)):
+`nix run . -- --json` prints (abridged):
 
 ```json
 [
@@ -64,6 +63,4 @@ users can see it in the process list for the few seconds it is valid.
 
 ## Development
 
-`nix fmt` formats everything with treefmt. `nix flake check` checks formatting
-and runs the script against the fixture, comparing the output with
-`fixtures/expected.json`.
+`nix fmt` formats everything with treefmt; `nix flake check` checks formatting.

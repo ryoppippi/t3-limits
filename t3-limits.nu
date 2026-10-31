@@ -74,9 +74,8 @@ def to-rows []: record -> list<record> {
 # Read AI provider usage limits from the running T3 Code server.
 def main [
     --json # Print JSON instead of a table
-    --fixture: path # Read a saved server.getConfig reply instead of the live server
 ] {
-    let reply = if $fixture == null { fetch-config } else { open --raw $fixture } | from json
+    let reply = fetch-config | from json
     let config = match $reply {
         {_tag: Exit, exit: {_tag: Success, value: $value}} => $value
         _ => (

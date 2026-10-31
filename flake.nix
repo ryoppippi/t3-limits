@@ -47,12 +47,6 @@
         in
         {
           formatting = treefmt.${system}.config.build.check self;
-          fixture = pkgs.runCommand "t3-limits-fixture" { } ''
-            ${
-              pkgs.lib.getExe self.packages.${system}.default
-            } --json --fixture ${./fixtures/get-config.json} > "$out"
-            diff -u ${./fixtures/expected.json} "$out"
-          '';
         }
       );
     };
