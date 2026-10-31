@@ -89,12 +89,10 @@ const liveReport = Effect.fnUntraced(function* (
           const discoveredName =
             yield* canonicalLoopbackOrigin(discoveredOrigin);
           if (missingName !== discoveredName) {
-            return yield* Effect.fail(
-              new AuthFailure({
-                message:
-                  "The --url override does not match the runtime server. Provide T3_LIMITS_TOKEN or --token-file to use this URL without automatic token setup.",
-              }),
-            );
+            return yield* new AuthFailure({
+              message:
+                "The --url override does not match the runtime server. Provide T3_LIMITS_TOKEN or --token-file to use this URL without automatic token setup.",
+            });
           }
         }
         const executable = yield* configuredT3Executable(

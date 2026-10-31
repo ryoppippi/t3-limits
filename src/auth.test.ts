@@ -104,6 +104,29 @@ describe("token selection and scoped issuance", () => {
     expect(issued).toBe(0);
   });
 
+  it("rejects a blank token from the missing-credential fallback", async () => {
+    await expect(
+      Effect.runPromise(
+        readBearerToken({
+          origin: "http://127.0.0.1:8318",
+          env: {},
+          readFile: async () => "unused",
+          onMissing: () => Effect.succeed(" \n"),
+        }),
+      ),
+    ).rejects.toThrow("Authentication required: the token must not be empty.");
+    await expect(
+      Effect.runPromise(
+        readBearerToken({
+          origin: "http://127.0.0.1:8318",
+          env: {},
+          readFile: async () => "unused",
+          onMissing: () => Effect.succeed(" issued-token\n"),
+        }),
+      ),
+    ).resolves.toBe("issued-token");
+  });
+
   it("issues the fixed scope and one-minute TTL with bounded token-only capture", async () => {
     let command: readonly string[] = [];
     let options:
