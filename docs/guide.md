@@ -29,50 +29,37 @@ If the installed T3 CLI is not on `PATH`, set its absolute executable path
 T3CODE_CLI_PATH=$HOME/.t3/bin/t3 nix run github:ryoppippi/t3-limits -- --json
 ```
 
-When a normal run falls through to the OS secret store and no token is stored,
-`t3-limits` asks the installed T3 CLI to issue a one-hour `orchestration:read`
-token and saves it in Bun's OS secret store. On Linux, the OS secret store
-needs an available libsecret service.
+When neither `--token-file` nor `T3_LIMITS_TOKEN` is supplied, each live
+retrieval asks the installed T3 CLI to issue a one-minute
+`orchestration:read` token. `t3-limits` keeps that token in memory for the
+current retrieval and does not save it locally. Each issuance creates an
+auth-session record in T3's state. The session expires after one minute;
+T3 may retain its record after expiry.
 
 ## Commands and flags
 
 ```text
 t3-limits [--json] [--home <directory>] [--url <origin>] [--token-file <path>]
 t3-limits --fixture <path> [--json]
-t3-limits auth login [--home <directory>] [--t3-bin <executable>]
-t3-limits auth logout [--home <directory> | --url <origin>]
 ```
 
 Here, `t3-limits ...` means `nix run github:ryoppippi/t3-limits -- ...`.
-For example:
-
-```sh
-nix run github:ryoppippi/t3-limits -- auth login
-nix run github:ryoppippi/t3-limits -- auth logout
-```
-
 Omit `--json` for a readable report. `--token-file` reads a token from the
 given file; tokens are never accepted directly as command-line arguments.
-`--t3-bin` selects the installed T3 executable for login. Login discovers
-the server and does not accept `--url`. Logout accepts either `--home` or
-`--url`. `--fixture` cannot be combined with connection options.
+If the installed T3 CLI is not on `PATH`, set `T3CODE_CLI_PATH` to its
+absolute executable path. `--fixture` cannot be combined with connection
+options.
 Use `-h` / `--help` or `--help-for-agents` for this guide, and
 `-v` / `--version` for the package version.
 
 ## Authentication
 
-For a request, credentials are checked in this order: `--token-file`,
-`T3_LIMITS_TOKEN`, then the OS secret store for the server origin. If the store
-has no token, first use can issue one as described above. An empty environment
-token, unreadable token file, or secret-store error stops the request without
-trying another source. An expired stored token is not automatically replaced;
-issue or renew one with `t3-limits auth login [--home <directory>] [--t3-bin
-<path>]`. Login reads the server origin from runtime state; it uses `t3` on
-`PATH` or `T3CODE_CLI_PATH`, unless `--t3-bin` selects the executable directly.
-
-`t3-limits auth logout [--home <directory> | --url <loopback-origin>]` removes
-the local token for that server origin. It does not revoke the issued server
-token.
+For a request, credentials are checked in this order: `--token-file`, then
+`T3_LIMITS_TOKEN`. If neither is supplied, `t3-limits` asks the T3 CLI to
+issue a fresh token for that retrieval. The issued token is held only in
+memory by `t3-limits` and discarded when the retrieval finishes. An empty
+environment token or unreadable or empty token file stops the request without
+trying another credential source.
 
 The server origin normally comes from
 `~/.t3/userdata/server-runtime.json`. `--url` accepts a loopback origin only,
@@ -80,7 +67,9 @@ with no path, query, fragment, or embedded credentials. `--home <directory>`
 selects the OS home directory containing `.t3`; it does not select an
 arbitrary T3 data directory. With a URL override, automatic token issuance is
 allowed only when its origin matches the runtime server origin for that home.
-For another loopback server, supply `--token-file` or `T3_LIMITS_TOKEN`.
+Explicit `--token-file` and `T3_LIMITS_TOKEN` credentials skip token issuance.
+With `--url`, they also skip runtime discovery. For another loopback server,
+supply one of those explicit credentials.
 
 ## 1Password
 

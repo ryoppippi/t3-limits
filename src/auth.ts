@@ -1,32 +1,12 @@
 import * as Effect from "effect/Effect";
 
 import { AuthFailure, ProcessFailure, type AppFailure } from "./errors.ts";
-import { canonicalSecretOrigin } from "./rpc.ts";
 
-export { canonicalSecretOrigin } from "./rpc.ts";
-
-export const TOKEN_SERVICE = "com.ryoppippi.t3-limits";
 export const TOKEN_SCOPE = "orchestration:read";
-export const TOKEN_TTL = "1h";
+export const TOKEN_TTL = "1m";
 export const TOKEN_LABEL = "t3-limits";
 export const SESSION_ISSUE_TIMEOUT_MS = 15_000;
 const MAX_TOKEN_OUTPUT_BYTES = 4096;
-
-export interface SecretStore {
-  get(options: {
-    readonly service: string;
-    readonly name: string;
-  }): Promise<string | null>;
-  set(options: {
-    readonly service: string;
-    readonly name: string;
-    readonly value: string;
-  }): Promise<void>;
-  delete(options: {
-    readonly service: string;
-    readonly name: string;
-  }): Promise<boolean>;
-}
 
 export interface SessionIssueChild {
   readonly stdout: ReadableStream<Uint8Array>;
@@ -47,12 +27,11 @@ export function readBearerToken(input: {
   readonly origin: string;
   readonly tokenFile?: string;
   readonly env: Readonly<Record<string, string | undefined>>;
-  readonly secrets: SecretStore;
   readonly readFile: (path: string) => Promise<string>;
-  readonly onMissing?: (origin: string) => Effect.Effect<string, AppFailure>;
+  readonly onMissing: (origin: string) => Effect.Effect<string, AppFailure>;
 }): Effect.Effect<string, AppFailure> {
   return Effect.gen(function* () {
-    let token: string | null | undefined;
+    let token: string;
     if (input.tokenFile !== undefined) {
       const tokenFile = input.tokenFile;
       token = yield* Effect.tryPromise({
@@ -60,6 +39,11 @@ export function readBearerToken(input: {
         catch: () =>
           new AuthFailure({ safeMessage: "The token file could not be read." }),
       });
+      if (token.trim().length === 0) {
+        return yield* Effect.fail(
+          new AuthFailure({ safeMessage: "The token file is empty." }),
+        );
+      }
     } else if (input.env.T3_LIMITS_TOKEN !== undefined) {
       token = input.env.T3_LIMITS_TOKEN;
       if (token.trim().length === 0) {
@@ -68,25 +52,14 @@ export function readBearerToken(input: {
         );
       }
     } else {
-      const name = yield* canonicalSecretOrigin(input.origin);
-      token = yield* Effect.tryPromise({
-        try: () => input.secrets.get({ service: TOKEN_SERVICE, name }),
-        catch: () =>
-          new AuthFailure({
-            safeMessage:
-              "Could not access the OS secret store. Use T3_LIMITS_TOKEN or --token-file, or enable the Bun 1.3+ OS secret backend (Linux: libsecret).",
-          }),
-      });
-      if (token === null && input.onMissing !== undefined)
-        token = yield* input.onMissing(input.origin);
+      token = yield* input.onMissing(input.origin);
     }
 
-    const trimmed = token?.trim();
-    if (trimmed === undefined || trimmed.length === 0) {
+    const trimmed = token.trim();
+    if (trimmed.length === 0) {
       return yield* Effect.fail(
         new AuthFailure({
-          safeMessage:
-            "Authentication required: run `t3-limits auth login`, set T3_LIMITS_TOKEN, or pass --token-file <path>.",
+          safeMessage: "Authentication required: the token must not be empty.",
         }),
       );
     }
@@ -156,8 +129,7 @@ export function issueScopedToken(input: {
         resume(
           Effect.fail(
             new ProcessFailure({
-              safeMessage:
-                "T3 scoped token issuance failed or timed out; no token was stored.",
+              safeMessage: "T3 scoped token issuance failed or timed out.",
             }),
           ),
         );
@@ -209,31 +181,5 @@ export function issueScopedToken(input: {
       kill();
       cancelOutput();
     });
-  });
-}
-
-export function issueAndStoreScopedToken(input: {
-  readonly origin: string;
-  readonly executable: string;
-  readonly baseDir: string;
-  readonly secrets: SecretStore;
-  readonly spawn: SessionSpawn;
-}): Effect.Effect<
-  string,
-  AuthFailure | ProcessFailure | import("./errors.ts").RpcFailure
-> {
-  return Effect.gen(function* () {
-    const token = yield* issueScopedToken(input);
-    const name = yield* canonicalSecretOrigin(input.origin);
-    yield* Effect.tryPromise({
-      try: () =>
-        input.secrets.set({ service: TOKEN_SERVICE, name, value: token }),
-      catch: () =>
-        new AuthFailure({
-          safeMessage:
-            "Could not store the scoped token in the OS secret store. Ensure Bun 1.3+ and an available OS keychain (Linux: libsecret).",
-        }),
-    });
-    return token;
   });
 }

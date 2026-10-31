@@ -119,7 +119,7 @@ export function webSocketUrl(
     : Effect.succeed(result);
 }
 
-export function canonicalSecretOrigin(
+export function canonicalLoopbackOrigin(
   origin: string,
 ): Effect.Effect<string, RpcFailure> {
   return Effect.map(webSocketUrl(origin, true), (value) => {

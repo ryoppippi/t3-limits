@@ -7,10 +7,8 @@ import packageJson from "../package.json" with { type: "json" };
 import guide from "../docs/guide.md" with { type: "text" };
 
 import {
-  issueAndStoreScopedToken,
+  issueScopedToken,
   readBearerToken,
-  TOKEN_SERVICE,
-  type SecretStore,
   type SessionSpawn,
 } from "./auth.ts";
 import {
@@ -28,7 +26,7 @@ import {
   type UsageLimitRow,
 } from "./limits.ts";
 import {
-  canonicalSecretOrigin,
+  canonicalLoopbackOrigin,
   readUsageLimitStreams,
   webSocketUrl,
 } from "./rpc.ts";
@@ -108,7 +106,6 @@ function runtimeOrigin(
 
 interface CliDependencies {
   readonly env: Readonly<Record<string, string | undefined>>;
-  readonly secrets: SecretStore;
   readonly readFile: (path: string) => Promise<string>;
   readonly spawn: SessionSpawn;
   readonly readUsageLimits?: typeof readUsageLimitStreams;
@@ -116,7 +113,6 @@ interface CliDependencies {
 
 const defaultDependencies: CliDependencies = {
   env: Bun.env,
-  secrets: Bun.secrets,
   readFile: (path) => Bun.file(path).text(),
   spawn: (command, options) => Bun.spawn([...command], options),
 };
@@ -147,15 +143,14 @@ function liveReport(
       origin,
       tokenFile: options.tokenFile,
       env: dependencies.env,
-      secrets: dependencies.secrets,
       readFile: dependencies.readFile,
       onMissing: (missingOrigin) =>
         Effect.gen(function* () {
           if (options.origin !== undefined) {
             const discoveredOrigin = yield* runtimeOrigin(options.home);
-            const missingName = yield* canonicalSecretOrigin(missingOrigin);
+            const missingName = yield* canonicalLoopbackOrigin(missingOrigin);
             const discoveredName =
-              yield* canonicalSecretOrigin(discoveredOrigin);
+              yield* canonicalLoopbackOrigin(discoveredOrigin);
             if (missingName !== discoveredName) {
               return yield* Effect.fail(
                 new AuthFailure({
@@ -168,11 +163,9 @@ function liveReport(
           const executable = yield* configuredT3Executable(
             dependencies.env.T3CODE_CLI_PATH,
           );
-          return yield* issueAndStoreScopedToken({
-            origin: missingOrigin,
+          return yield* issueScopedToken({
             executable,
             baseDir: join(options.home ?? homedir(), ".t3"),
-            secrets: dependencies.secrets,
             spawn: dependencies.spawn,
           });
         }),
@@ -185,7 +178,7 @@ function liveReport(
       () =>
         new RpcFailure({
           safeMessage:
-            "Could not retrieve T3 usage limits. Check the server connection and credential; run `t3-limits auth login` to replace an expired stored token, or replace the supplied token.",
+            "Could not retrieve T3 usage limits. Check the server connection and supplied credential.",
         }),
     );
     return yield* projectUsageLimits(data);
@@ -241,16 +234,8 @@ function printReport(
   });
 }
 
-interface AuthOptions {
-  readonly command: "login" | "logout";
-  readonly home?: string;
-  readonly origin?: string;
-  readonly t3Bin?: string;
-}
-
 type CliInvocation =
   | { readonly kind: "report"; readonly options: CliOptions }
-  | { readonly kind: "auth"; readonly options: AuthOptions }
   | { readonly kind: "guide" };
 
 function parserFailure(message: string): never {
@@ -320,7 +305,7 @@ function createCommands(setInvocation: (invocation: CliInvocation) => void) {
       },
       home: {
         type: "string",
-        description: "Use this OS home for runtime and auth state",
+        description: "Use this OS home for T3 runtime state",
       },
       "token-file": {
         type: "string",
@@ -351,117 +336,7 @@ function createCommands(setInvocation: (invocation: CliInvocation) => void) {
     },
   });
 
-  const login = define({
-    name: "login",
-    description: "Issue and store a scoped usage token",
-    args: {
-      home: {
-        type: "string",
-        description: "Use this OS home for runtime and auth state",
-      },
-      "t3-bin": { type: "string", description: "Path to the installed T3 CLI" },
-    },
-    run: (ctx) => {
-      const { home } = ctx.values;
-      const t3Bin = ctx.values["t3-bin"];
-      setInvocation({
-        kind: "auth",
-        options: {
-          command: "login",
-          ...(home === undefined ? {} : { home }),
-          ...(t3Bin === undefined ? {} : { t3Bin }),
-        },
-      });
-    },
-  });
-
-  const logout = define({
-    name: "logout",
-    description: "Remove the local usage token",
-    args: {
-      home: {
-        type: "string",
-        description: "Use this OS home for runtime and auth state",
-        conflicts: "url",
-      },
-      url: {
-        type: "string",
-        description: "Connect to a loopback server origin",
-        conflicts: "home",
-      },
-    },
-    run: (ctx) => {
-      const { home, url: origin } = ctx.values;
-      setInvocation({
-        kind: "auth",
-        options: {
-          command: "logout",
-          ...(home === undefined ? {} : { home }),
-          ...(origin === undefined ? {} : { origin }),
-        },
-      });
-    },
-  });
-
-  const auth = define({
-    name: "auth",
-    description: "Manage the local usage token",
-    subCommands: { login, logout },
-    run: () => parserFailure("Expected `auth login` or `auth logout`."),
-  });
-
-  return { report, auth };
-}
-
-function runAuth(
-  options: AuthOptions,
-  dependencies: CliDependencies,
-): Effect.Effect<void, AppFailure> {
-  return Effect.gen(function* () {
-    const origin = options.origin ?? (yield* runtimeOrigin(options.home));
-    const name = yield* canonicalSecretOrigin(origin);
-    const secretKey = { service: TOKEN_SERVICE, name };
-    if (options.command === "logout") {
-      yield* Effect.tryPromise({
-        try: () => dependencies.secrets.delete(secretKey),
-        catch: () =>
-          new AuthFailure({
-            safeMessage:
-              "Could not access the OS secret store to remove the local token. Ensure Bun 1.3+ and an available OS keychain (Linux: libsecret).",
-          }),
-      });
-      yield* Effect.sync(() =>
-        console.log(
-          "Local token removed if present. Any issued server token remains valid until expiry.",
-        ),
-      );
-      return;
-    }
-
-    const executable =
-      options.t3Bin === undefined
-        ? yield* configuredT3Executable(dependencies.env.T3CODE_CLI_PATH)
-        : options.t3Bin;
-    if (executable.trim().length === 0) {
-      return yield* Effect.fail(
-        new CliFailure({
-          safeMessage:
-            "T3CODE_CLI_PATH or --t3-bin must name the installed T3 CLI executable.",
-        }),
-      );
-    }
-    const baseDir = join(options.home ?? homedir(), ".t3");
-    yield* issueAndStoreScopedToken({
-      origin,
-      executable,
-      baseDir,
-      secrets: dependencies.secrets,
-      spawn: dependencies.spawn,
-    });
-    yield* Effect.sync(() =>
-      console.log(`Scoped token stored for ${name}; it expires in one hour.`),
-    );
-  });
+  return { report };
 }
 
 export function runCli(
@@ -472,14 +347,13 @@ export function runCli(
     let invocation: CliInvocation | undefined;
     const parsed = yield* Effect.tryPromise({
       try: async () => {
-        const { report, auth } = createCommands((value) => {
+        const { report } = createCommands((value) => {
           invocation = value;
         });
         const usage = await cli([...args], report, {
           name: packageJson.name,
           version: packageJson.version,
           description: "Read usage limits from a running T3 Code server",
-          subCommands: { auth },
           fallbackToEntry: true,
           strict: true,
           usageSilent: true,
@@ -494,7 +368,7 @@ export function runCli(
         }
         if (invocation === undefined) {
           throw new CliFailure({
-            safeMessage: "Expected `auth login` or `auth logout`.",
+            safeMessage: "Invalid command-line arguments.",
           });
         }
         return invocation;
@@ -511,10 +385,6 @@ export function runCli(
     if (parsed === undefined) return;
     if (parsed.kind === "guide") {
       console.log(guide.trimEnd());
-      return;
-    }
-    if (parsed.kind === "auth") {
-      yield* runAuth(parsed.options, dependencies);
       return;
     }
     const report =
