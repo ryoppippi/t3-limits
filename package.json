@@ -14,6 +14,7 @@
     "generate:nix": "nix run .#bun2nix -- -o nix/bun.nix"
   },
   "devDependencies": {
+    "@gunshi/docs": "0.37.3",
     "@types/bun": "1.4.4"
   },
   "dependencies": {
