@@ -1,4 +1,4 @@
-name: Bun and Nix CI
+name: CI
 
 on:
   push:
