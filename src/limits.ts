@@ -2,23 +2,34 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
-import { ServerProviderUsageLimits, ServerProviderUsageWindow } from "../.generated/t3-contracts/providerUsageLimits.ts";
+import {
+  ServerProviderUsageLimits,
+  ServerProviderUsageWindow,
+} from "../.generated/t3-contracts/providerUsageLimits.ts";
 import { InputFailure } from "./errors.ts";
 
 export type UsageLimitWindow = typeof ServerProviderUsageWindow.Type & {
   readonly remainingPercent: number;
 };
 
-type UpstreamUnavailableReason = NonNullable<typeof ServerProviderUsageLimits.Type["unavailable"]>["reason"];
+type UpstreamUnavailableReason = NonNullable<
+  (typeof ServerProviderUsageLimits.Type)["unavailable"]
+>["reason"];
 
 const upstreamUnavailableReasons = {
   unsupported: "unsupported",
   probeFailed: "probeFailed",
-} as const satisfies Record<UpstreamUnavailableReason, UpstreamUnavailableReason>;
+} as const satisfies Record<
+  UpstreamUnavailableReason,
+  UpstreamUnavailableReason
+>;
 
-const UpstreamUnavailableReasonSchema = Schema.Literals(Object.values(upstreamUnavailableReasons));
+const UpstreamUnavailableReasonSchema = Schema.Literals(
+  Object.values(upstreamUnavailableReasons),
+);
 
-export type UsageLimitUnavailableReason = UpstreamUnavailableReason | "notReported" | "invalidSnapshot";
+export type UsageLimitUnavailableReason =
+  UpstreamUnavailableReason | "notReported" | "invalidSnapshot";
 
 export interface UsageLimitRow {
   readonly id: string;
@@ -81,11 +92,19 @@ const UsageLimitRowSchema = Schema.Struct({
   enabled: Schema.optional(Schema.Boolean),
   checkedAt: Schema.optional(Schema.String),
   unavailable: Schema.Boolean,
-  reason: Schema.optional(Schema.Literals([...Object.values(upstreamUnavailableReasons), "notReported", "invalidSnapshot"])),
-  windows: Schema.Array(Schema.Struct({
-    ...ServerProviderUsageWindow.fields,
-    remainingPercent: Schema.Finite,
-  })),
+  reason: Schema.optional(
+    Schema.Literals([
+      ...Object.values(upstreamUnavailableReasons),
+      "notReported",
+      "invalidSnapshot",
+    ]),
+  ),
+  windows: Schema.Array(
+    Schema.Struct({
+      ...ServerProviderUsageWindow.fields,
+      remainingPercent: Schema.Finite,
+    }),
+  ),
 });
 
 const UsageLimitReportSchema = Schema.Struct({
@@ -103,16 +122,22 @@ function stringValue(value: unknown): string | undefined {
 }
 
 function checkedTimestamp(value: unknown): string | undefined {
-  if (typeof value !== "string" || !Number.isFinite(Date.parse(value))) return undefined;
+  if (typeof value !== "string" || !Number.isFinite(Date.parse(value)))
+    return undefined;
   return value;
 }
 
-function decodeOption<S extends Schema.ConstraintDecoder<unknown>>(schema: S, value: unknown): S["Type"] | undefined {
+function decodeOption<S extends Schema.ConstraintDecoder<unknown>>(
+  schema: S,
+  value: unknown,
+): S["Type"] | undefined {
   const decoded = Schema.decodeUnknownOption(schema)(value);
   return Option.isSome(decoded) ? decoded.value : undefined;
 }
 
-function windowsFrom(value: unknown):
+function windowsFrom(
+  value: unknown,
+):
   | { readonly windows: readonly UsageLimitWindow[]; readonly invalid: false }
   | { readonly windows: readonly []; readonly invalid: true } {
   if (!Array.isArray(value)) return { windows: [], invalid: true };
@@ -122,7 +147,8 @@ function windowsFrom(value: unknown):
   const windows: UsageLimitWindow[] = [];
   for (const item of decoded satisfies readonly UsageWindowInput[]) {
     const resetsAt = checkedTimestamp(item.resetsAt);
-    if (item.resetsAt !== undefined && resetsAt === undefined) return { windows: [], invalid: true };
+    if (item.resetsAt !== undefined && resetsAt === undefined)
+      return { windows: [], invalid: true };
     windows.push({
       id: item.id,
       kind: item.kind,
@@ -130,20 +156,28 @@ function windowsFrom(value: unknown):
       usedPercent: item.usedPercent,
       remainingPercent: Math.round((100 - item.usedPercent) * 100) / 100,
       ...(resetsAt === undefined ? {} : { resetsAt }),
-      ...(item.windowDurationMins === undefined ? {} : { windowDurationMins: item.windowDurationMins }),
+      ...(item.windowDurationMins === undefined
+        ? {}
+        : { windowDurationMins: item.windowDurationMins }),
     });
   }
   return { windows, invalid: false };
 }
 
-function unavailableReason(value: UsageLimitsInput | undefined, missingLimits: boolean): UsageLimitUnavailableReason | undefined {
+function unavailableReason(
+  value: UsageLimitsInput | undefined,
+  missingLimits: boolean,
+): UsageLimitUnavailableReason | undefined {
   if (missingLimits) return "notReported";
   if (value === undefined) return "invalidSnapshot";
   const unavailable = value.unavailable;
   if (unavailable === undefined) return undefined;
-  const decoded = decodeOption(Schema.Struct({
-    reason: UpstreamUnavailableReasonSchema,
-  }), unavailable);
+  const decoded = decodeOption(
+    Schema.Struct({
+      reason: UpstreamUnavailableReasonSchema,
+    }),
+    unavailable,
+  );
   return decoded?.reason ?? "invalidSnapshot";
 }
 
@@ -158,17 +192,21 @@ function makeRow(input: {
   const id = stringValue(input.id);
   const driver = stringValue(input.driver);
   const label = stringValue(input.label);
-  if (id === undefined || driver === undefined || label === undefined) return undefined;
+  if (id === undefined || driver === undefined || label === undefined)
+    return undefined;
 
   const missingLimits = input.limits === undefined;
   const limits = decodeOption(UsageLimitsSchema, input.limits);
-  const parsedWindows = limits === undefined
-    ? { windows: [], invalid: !missingLimits } as const
-    : windowsFrom(limits.windows);
+  const parsedWindows =
+    limits === undefined
+      ? ({ windows: [], invalid: !missingLimits } as const)
+      : windowsFrom(limits.windows);
   let reason = unavailableReason(limits, missingLimits);
   if (
     !missingLimits &&
-    (limits === undefined || checkedTimestamp(limits.checkedAt) === undefined || parsedWindows.invalid)
+    (limits === undefined ||
+      checkedTimestamp(limits.checkedAt) === undefined ||
+      parsedWindows.invalid)
   ) {
     reason = "invalidSnapshot";
   }
@@ -212,7 +250,8 @@ function projectSourceAccount(
   return makeRow({
     id: accountId === undefined ? accountId : `${sourceId}/${accountId}`,
     driver: account.driver,
-    label: accountId === undefined ? sourceLabel : `${sourceLabel} / ${accountId}`,
+    label:
+      accountId === undefined ? sourceLabel : `${sourceLabel} / ${accountId}`,
     ...(stableSourceId === undefined ? {} : { sourceId: stableSourceId }),
     limits: account.usageLimits,
   });
@@ -228,19 +267,25 @@ export function projectUsageLimits(input: {
     providers: input.providers,
     sources: input.sources,
   });
-  return Effect.gen(function*() {
+  return Effect.gen(function* () {
     const data = yield* Effect.mapError(
       decodedInput,
-      () => new InputFailure({ safeMessage: "The usage-limits input must include provider and source arrays." }),
+      () =>
+        new InputFailure({
+          safeMessage:
+            "The usage-limits input must include provider and source arrays.",
+        }),
     );
-    const retrievedAt = checkedTimestamp(input.retrievedAt) ?? new Date().toISOString();
+    const retrievedAt =
+      checkedTimestamp(input.retrievedAt) ?? new Date().toISOString();
     const rows: UsageLimitRow[] = [];
     const notices: string[] = [];
 
     for (const value of data.providers) {
       const row = projectProvider(value);
       if (row) rows.push(row);
-      else notices.push("Some provider usage-limit data was invalid and omitted.");
+      else
+        notices.push("Some provider usage-limit data was invalid and omitted.");
     }
 
     for (const value of data.sources) {
@@ -258,13 +303,21 @@ export function projectUsageLimits(input: {
         );
       }
       if (!Array.isArray(source.accounts)) {
-        notices.push(`Usage limit source ${sourceId} (${sourceLabel}) contained invalid data.`);
+        notices.push(
+          `Usage limit source ${sourceId} (${sourceLabel}) contained invalid data.`,
+        );
         continue;
       }
       for (const account of source.accounts) {
-        const row = projectSourceAccount(source, sourceId, sourceLabel, account);
+        const row = projectSourceAccount(
+          source,
+          sourceId,
+          sourceLabel,
+          account,
+        );
         if (row) rows.push(row);
-        else notices.push("Some usage-limit source data was invalid and omitted.");
+        else
+          notices.push("Some usage-limit source data was invalid and omitted.");
       }
     }
 
@@ -275,7 +328,10 @@ export function projectUsageLimits(input: {
     };
     return yield* Effect.mapError(
       Schema.decodeUnknownEffect(UsageLimitReportSchema)(report),
-      () => new InputFailure({ safeMessage: "The usage-limits report could not be created safely." }),
+      () =>
+        new InputFailure({
+          safeMessage: "The usage-limits report could not be created safely.",
+        }),
     );
   });
 }

@@ -14,7 +14,10 @@ let
     fileset = lib.fileset.unions [
       ./package.json
       ./bun.lock
+      ./bunfig.toml
+      ./tsconfig.json
       ./src
+      ./scripts
       ./fixtures
       ./docs
       ./README.md
@@ -37,10 +40,10 @@ stdenvNoCC.mkDerivation {
   dontRunLifecycleScripts = true;
   dontStrip = true;
   dontPatchELF = true;
+  __darwinAllowLocalNetworking = true;
   bunInstallFlags = [
     "--no-env-file"
     "--linker=isolated"
-    "--production"
   ] ++ lib.optionals stdenvNoCC.hostPlatform.isDarwin [ "--backend=symlink" ];
 
   buildPhase = ''
@@ -55,6 +58,16 @@ stdenvNoCC.mkDerivation {
       --no-compile-autoload-bunfig
 
     runHook postBuild
+  '';
+
+  doCheck = true;
+  checkPhase = ''
+    runHook preCheck
+
+    ${bun}/bin/bun --no-env-file run check
+    ${bun}/bin/bun --no-env-file run test
+
+    runHook postCheck
   '';
 
   installPhase = ''

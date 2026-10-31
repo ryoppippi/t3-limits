@@ -9,7 +9,8 @@ test("uses Bun's real WebSocket transport with a bearer header", async () => {
     hostname: "127.0.0.1",
     port: 0,
     fetch(request, server) {
-      authorised = request.headers.get("authorization") === "Bearer synthetic-test-token";
+      authorised =
+        request.headers.get("authorization") === "Bearer synthetic-test-token";
       if (server.upgrade(request)) return;
       return new Response(null, { status: 400 });
     },
@@ -18,23 +19,41 @@ test("uses Bun's real WebSocket transport with a bearer header", async () => {
         const frame = JSON.parse(String(data));
         if (frame._tag !== "Request") return;
         methods.push(frame.tag);
-        socket.send(JSON.stringify([
-          { _tag: "Chunk", requestId: frame.id, values: [
-            { version: 1, type: "snapshot", config: { providers: [] } },
-          ] },
-          { _tag: "Chunk", requestId: frame.id, values: [
-            { version: 1, type: "usageLimitSourcesUpdated", payload: { sources: [] } },
-          ] },
-        ]));
+        socket.send(
+          JSON.stringify([
+            {
+              _tag: "Chunk",
+              requestId: frame.id,
+              values: [
+                { version: 1, type: "snapshot", config: { providers: [] } },
+              ],
+            },
+            {
+              _tag: "Chunk",
+              requestId: frame.id,
+              values: [
+                {
+                  version: 1,
+                  type: "usageLimitSourcesUpdated",
+                  payload: { sources: [] },
+                },
+              ],
+            },
+          ]),
+        );
       },
     },
   });
   try {
-    expect(await Effect.runPromise(readUsageLimitStreams({
-      origin: `http://127.0.0.1:${server.port}`,
-      token: "synthetic-test-token",
-      timeoutMs: 1_000,
-    }))).toEqual({ providers: [], sources: [] });
+    expect(
+      await Effect.runPromise(
+        readUsageLimitStreams({
+          origin: `http://127.0.0.1:${server.port}`,
+          token: "synthetic-test-token",
+          timeoutMs: 1_000,
+        }),
+      ),
+    ).toEqual({ providers: [], sources: [] });
     expect(authorised).toBe(true);
     expect(methods).toEqual(["subscribeServerConfig"]);
   } finally {

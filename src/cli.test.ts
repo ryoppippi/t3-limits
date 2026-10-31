@@ -10,14 +10,19 @@ describe("t3-limits CLI", () => {
     const originalLog = console.log;
     console.log = (...values: unknown[]) => output.push(values.join(" "));
     try {
-      const fixturePath = fileURLToPath(new URL("../fixtures/usage-limits.json", import.meta.url));
+      const fixturePath = fileURLToPath(
+        new URL("../fixtures/usage-limits.json", import.meta.url),
+      );
       await Effect.runPromise(runCli(["--fixture", fixturePath, "--json"]));
     } finally {
       console.log = originalLog;
     }
 
     const printed = output.join("\n");
-    const report = JSON.parse(printed) as { providers: unknown[]; notices: string[] };
+    const report = JSON.parse(printed) as {
+      providers: unknown[];
+      notices: string[];
+    };
     expect(report.providers).toHaveLength(3);
     expect(report.notices).toHaveLength(2);
     expect(printed).not.toContain("fixture-secret");
@@ -29,9 +34,9 @@ describe("t3-limits CLI", () => {
     const originalToken = process.env.T3_LIMITS_TOKEN;
     process.env.T3_LIMITS_TOKEN = "";
     try {
-      await expect(Effect.runPromise(runCli(["--url", "http://127.0.0.1:8318"]))).rejects.toThrow(
-        "T3_LIMITS_TOKEN is set but empty.",
-      );
+      await expect(
+        Effect.runPromise(runCli(["--url", "http://127.0.0.1:8318"])),
+      ).rejects.toThrow("T3_LIMITS_TOKEN is set but empty.");
     } finally {
       if (originalToken === undefined) delete process.env.T3_LIMITS_TOKEN;
       else process.env.T3_LIMITS_TOKEN = originalToken;
@@ -39,18 +44,31 @@ describe("t3-limits CLI", () => {
   });
 
   it("rejects unknown, positional, repeated, and conflicting input before touching credentials", async () => {
-    const fixturePath = fileURLToPath(new URL("../fixtures/usage-limits.json", import.meta.url));
+    const fixturePath = fileURLToPath(
+      new URL("../fixtures/usage-limits.json", import.meta.url),
+    );
     let credentialReads = 0;
     let fileReads = 0;
     let processSpawns = 0;
     const dependencies = {
       env: {},
       secrets: {
-        get: async () => { credentialReads += 1; return null; },
-        set: async () => { credentialReads += 1; },
-        delete: async () => { credentialReads += 1; return true; },
+        get: async () => {
+          credentialReads += 1;
+          return null;
+        },
+        set: async () => {
+          credentialReads += 1;
+        },
+        delete: async () => {
+          credentialReads += 1;
+          return true;
+        },
       },
-      readFile: async () => { fileReads += 1; return "unused"; },
+      readFile: async () => {
+        fileReads += 1;
+        return "unused";
+      },
       spawn: () => {
         processSpawns += 1;
         throw new Error("must not spawn");
@@ -97,19 +115,32 @@ describe("t3-limits CLI", () => {
     const originalLog = console.log;
     console.log = (...values: unknown[]) => output.push(values.join(" "));
     try {
-      await Effect.runPromise(runCli(["auth", "login", "--help"], {
-        env: {},
-        secrets: {
-          get: async () => { credentialReads += 1; return null; },
-          set: async () => { credentialReads += 1; },
-          delete: async () => { credentialReads += 1; return true; },
-        },
-        readFile: async () => { fileReads += 1; return "unused"; },
-        spawn: () => {
-          processSpawns += 1;
-          throw new Error("must not spawn");
-        },
-      }));
+      await Effect.runPromise(
+        runCli(["auth", "login", "--help"], {
+          env: {},
+          secrets: {
+            get: async () => {
+              credentialReads += 1;
+              return null;
+            },
+            set: async () => {
+              credentialReads += 1;
+            },
+            delete: async () => {
+              credentialReads += 1;
+              return true;
+            },
+          },
+          readFile: async () => {
+            fileReads += 1;
+            return "unused";
+          },
+          spawn: () => {
+            processSpawns += 1;
+            throw new Error("must not spawn");
+          },
+        }),
+      );
     } finally {
       console.log = originalLog;
     }
@@ -121,7 +152,9 @@ describe("t3-limits CLI", () => {
   });
 
   it("prints the shared guide for both root help flags without dependency IO", async () => {
-    const guide = await Bun.file(fileURLToPath(new URL("../docs/guide.md", import.meta.url))).text();
+    const guide = await Bun.file(
+      fileURLToPath(new URL("../docs/guide.md", import.meta.url)),
+    ).text();
     const helpOutputs: string[] = [];
     let credentialReads = 0;
     let fileReads = 0;
@@ -129,11 +162,22 @@ describe("t3-limits CLI", () => {
     const dependencies = {
       env: {},
       secrets: {
-        get: async () => { credentialReads += 1; return null; },
-        set: async () => { credentialReads += 1; },
-        delete: async () => { credentialReads += 1; return true; },
+        get: async () => {
+          credentialReads += 1;
+          return null;
+        },
+        set: async () => {
+          credentialReads += 1;
+        },
+        delete: async () => {
+          credentialReads += 1;
+          return true;
+        },
       },
-      readFile: async () => { fileReads += 1; return "unused"; },
+      readFile: async () => {
+        fileReads += 1;
+        return "unused";
+      },
       spawn: () => {
         processSpawns += 1;
         throw new Error("must not spawn");
@@ -145,12 +189,16 @@ describe("t3-limits CLI", () => {
       await Effect.runPromise(runCli(["--help"], dependencies));
       await Effect.runPromise(runCli(["--help-for-agents"], dependencies));
       await Effect.runPromise(runCli(["auth", "--help"], dependencies));
-      await Effect.runPromise(runCli(["auth", "login", "--help"], dependencies));
+      await Effect.runPromise(
+        runCli(["auth", "login", "--help"], dependencies),
+      );
     } finally {
       console.log = originalLog;
     }
 
-    expect(helpOutputs).toEqual(Array.from({ length: 4 }, () => guide.trimEnd()));
+    expect(helpOutputs).toEqual(
+      Array.from({ length: 4 }, () => guide.trimEnd()),
+    );
     expect(credentialReads).toBe(0);
     expect(fileReads).toBe(0);
     expect(processSpawns).toBe(0);
@@ -164,19 +212,32 @@ describe("t3-limits CLI", () => {
     const originalLog = console.log;
     console.log = (...values: unknown[]) => output.push(values.join(" "));
     try {
-      await Effect.runPromise(runCli(["--version"], {
-        env: {},
-        secrets: {
-          get: async () => { credentialReads += 1; return null; },
-          set: async () => { credentialReads += 1; },
-          delete: async () => { credentialReads += 1; return true; },
-        },
-        readFile: async () => { fileReads += 1; return "unused"; },
-        spawn: () => {
-          processSpawns += 1;
-          throw new Error("must not spawn");
-        },
-      }));
+      await Effect.runPromise(
+        runCli(["--version"], {
+          env: {},
+          secrets: {
+            get: async () => {
+              credentialReads += 1;
+              return null;
+            },
+            set: async () => {
+              credentialReads += 1;
+            },
+            delete: async () => {
+              credentialReads += 1;
+              return true;
+            },
+          },
+          readFile: async () => {
+            fileReads += 1;
+            return "unused";
+          },
+          spawn: () => {
+            processSpawns += 1;
+            throw new Error("must not spawn");
+          },
+        }),
+      );
     } finally {
       console.log = originalLog;
     }
