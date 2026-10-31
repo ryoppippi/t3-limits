@@ -147,13 +147,13 @@ function createCommands(setInvocation: (invocation: CliInvocation) => void) {
         type: "string",
         description: "Read a bearer token from a file",
       },
-      "help-for-agents": {
+      helpForAgents: {
         type: "boolean",
         description: "Print the complete setup and usage guide",
       },
     },
     run: (ctx) => {
-      if (ctx.values["help-for-agents"] === true) {
+      if (ctx.values.helpForAgents === true) {
         setInvocation({ kind: "guide" });
         return;
       }
@@ -193,7 +193,6 @@ export const runCli = Effect.fnUntraced(function* (
         strict: true,
         usageSilent: true,
         renderHeader: async () => "",
-        renderUsage: async () => guide,
         renderValidationErrors: async () => "",
         onBeforeCommand: validateParsedArguments,
       });

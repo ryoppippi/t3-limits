@@ -49,8 +49,8 @@ given file; tokens are never accepted directly as command-line arguments.
 If the installed T3 CLI is not on `PATH`, set `T3CODE_CLI_PATH` to its
 absolute executable path. `--fixture` cannot be combined with connection
 options.
-Use `-h` / `--help` or `--help-for-agents` for this guide, and
-`-v` / `--version` for the package version.
+Use `-h` / `--help` for concise generated usage, `--helpForAgents` for this
+guide, and `-v` / `--version` for the package version.
 
 ## Authentication
 
@@ -141,4 +141,5 @@ or authenticating:
 nix run . -- --fixture fixtures/usage-limits.json --json
 ```
 
-Both `t3-limits --help` and `t3-limits --help-for-agents` print this guide.
+`t3-limits --help` and `t3-limits -h` print concise generated usage.
+`t3-limits --helpForAgents` prints this guide.
