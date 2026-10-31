@@ -2,23 +2,23 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
+import { ServerProviderUsageLimits, ServerProviderUsageWindow } from "../.generated/t3-contracts/providerUsageLimits.ts";
 import { InputFailure } from "./errors.ts";
 
-export interface UsageLimitWindow {
-  readonly id: string;
-  readonly kind: "session" | "weekly" | "monthly" | "other";
-  readonly label: string;
-  readonly usedPercent: number;
+export type UsageLimitWindow = typeof ServerProviderUsageWindow.Type & {
   readonly remainingPercent: number;
-  readonly resetsAt?: string;
-  readonly windowDurationMins?: number;
-}
+};
 
-export type UsageLimitUnavailableReason =
-  | "unsupported"
-  | "probeFailed"
-  | "notReported"
-  | "invalidSnapshot";
+type UpstreamUnavailableReason = NonNullable<typeof ServerProviderUsageLimits.Type["unavailable"]>["reason"];
+
+const upstreamUnavailableReasons = {
+  unsupported: "unsupported",
+  probeFailed: "probeFailed",
+} as const satisfies Record<UpstreamUnavailableReason, UpstreamUnavailableReason>;
+
+const UpstreamUnavailableReasonSchema = Schema.Literals(Object.values(upstreamUnavailableReasons));
+
+export type UsageLimitUnavailableReason = UpstreamUnavailableReason | "notReported" | "invalidSnapshot";
 
 export interface UsageLimitRow {
   readonly id: string;
@@ -38,16 +38,7 @@ export interface UsageLimitReport {
   readonly notices: readonly string[];
 }
 
-const UsageWindowSchema = Schema.Struct({
-  id: Schema.NonEmptyString,
-  kind: Schema.Literals(["session", "weekly", "monthly", "other"]),
-  label: Schema.NonEmptyString,
-  usedPercent: Schema.Finite.check(Schema.isBetween({ minimum: 0, maximum: 100 })),
-  resetsAt: Schema.optional(Schema.String),
-  windowDurationMins: Schema.optional(
-    Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER })),
-  ),
-});
+const UsageWindowSchema = ServerProviderUsageWindow;
 
 const UsageLimitsSchema = Schema.Struct({
   checkedAt: Schema.optional(Schema.Unknown),
@@ -90,15 +81,10 @@ const UsageLimitRowSchema = Schema.Struct({
   enabled: Schema.optional(Schema.Boolean),
   checkedAt: Schema.optional(Schema.String),
   unavailable: Schema.Boolean,
-  reason: Schema.optional(Schema.Literals(["unsupported", "probeFailed", "notReported", "invalidSnapshot"])),
+  reason: Schema.optional(Schema.Literals([...Object.values(upstreamUnavailableReasons), "notReported", "invalidSnapshot"])),
   windows: Schema.Array(Schema.Struct({
-    id: Schema.String,
-    kind: Schema.Literals(["session", "weekly", "monthly", "other"]),
-    label: Schema.String,
-    usedPercent: Schema.Finite,
+    ...ServerProviderUsageWindow.fields,
     remainingPercent: Schema.Finite,
-    resetsAt: Schema.optional(Schema.String),
-    windowDurationMins: Schema.optional(Schema.Int),
   })),
 });
 
@@ -156,7 +142,7 @@ function unavailableReason(value: UsageLimitsInput | undefined, missingLimits: b
   const unavailable = value.unavailable;
   if (unavailable === undefined) return undefined;
   const decoded = decodeOption(Schema.Struct({
-    reason: Schema.Literals(["unsupported", "probeFailed"]),
+    reason: UpstreamUnavailableReasonSchema,
   }), unavailable);
   return decoded?.reason ?? "invalidSnapshot";
 }

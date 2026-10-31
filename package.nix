@@ -3,6 +3,7 @@
   stdenvNoCC,
   bun,
   bun2nix,
+  t3Contracts,
   supportedSystems,
 }:
 let
@@ -45,6 +46,9 @@ stdenvNoCC.mkDerivation {
   buildPhase = ''
     runHook preBuild
 
+    mkdir -p .generated/t3-contracts
+    cp -R ${t3Contracts}/. .generated/t3-contracts/
+
     ${bun}/bin/bun --no-env-file build --compile src/cli.ts \
       --outfile=t3-limits \
       --no-compile-autoload-dotenv \
@@ -59,6 +63,7 @@ stdenvNoCC.mkDerivation {
     install -Dm755 t3-limits "$out/bin/t3-limits"
     install -Dm644 README.md "$out/share/doc/t3-limits/README.md"
     install -Dm644 LICENSE "$out/share/licenses/t3-limits/LICENSE"
+    install -Dm644 .generated/t3-contracts/LICENSE "$out/share/licenses/t3-limits/t3code-LICENSE"
     install -Dm644 node_modules/effect/LICENSE "$out/share/licenses/t3-limits/effect-LICENSE"
     mkdir -p "$out/share/t3-limits"
     cp -R docs fixtures "$out/share/t3-limits/"

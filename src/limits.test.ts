@@ -155,4 +155,26 @@ describe("projectUsageLimits", () => {
       expect(report.providers[0]).toMatchObject({ unavailable: true, reason: "invalidSnapshot", windows: [] });
     }
   });
+
+  it("uses the upstream trimmed, non-blank usage-window contract", () => {
+    const report = Effect.runSync(projectUsageLimits({
+      providers: [
+        { instanceId: "trimmed", driver: "codex", usageLimits: {
+          checkedAt: "2026-10-31T11:00:00.000Z",
+          windows: [{ id: " session ", kind: "session", label: "  Session  ", usedPercent: 42 }],
+        } },
+        { instanceId: "blank", driver: "codex", usageLimits: {
+          checkedAt: "2026-10-31T11:00:00.000Z",
+          windows: [{ id: "   ", kind: "session", label: "Session", usedPercent: 42 }],
+        } },
+      ],
+      sources: [],
+    }));
+
+    expect(report.providers[0]).toMatchObject({
+      unavailable: false,
+      windows: [{ id: "session", label: "Session", usedPercent: 42, remainingPercent: 58 }],
+    });
+    expect(report.providers[1]).toMatchObject({ unavailable: true, reason: "invalidSnapshot", windows: [] });
+  });
 });
