@@ -4,7 +4,7 @@ Read usage limits from a running [T3 Code](https://github.com/pingdotgg/t3code)
 server:
 
 ```sh
-nix run github:ryoppippi/t3-limits -- --json
+nix run github:ryoppippi/t3-limits
 ```
 
 See the [setup, authentication, and report guide](docs/guide.md).
