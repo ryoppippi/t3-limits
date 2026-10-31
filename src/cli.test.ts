@@ -120,6 +120,42 @@ describe("t3-limits CLI", () => {
     expect(processSpawns).toBe(0);
   });
 
+  it("prints the shared guide for both root help flags without dependency IO", async () => {
+    const guide = await Bun.file(fileURLToPath(new URL("../docs/guide.md", import.meta.url))).text();
+    const helpOutputs: string[] = [];
+    let credentialReads = 0;
+    let fileReads = 0;
+    let processSpawns = 0;
+    const dependencies = {
+      env: {},
+      secrets: {
+        get: async () => { credentialReads += 1; return null; },
+        set: async () => { credentialReads += 1; },
+        delete: async () => { credentialReads += 1; return true; },
+      },
+      readFile: async () => { fileReads += 1; return "unused"; },
+      spawn: () => {
+        processSpawns += 1;
+        throw new Error("must not spawn");
+      },
+    } satisfies NonNullable<Parameters<typeof runCli>[1]>;
+    const originalLog = console.log;
+    console.log = (...values: unknown[]) => helpOutputs.push(values.join(" "));
+    try {
+      await Effect.runPromise(runCli(["--help"], dependencies));
+      await Effect.runPromise(runCli(["--help-for-agents"], dependencies));
+      await Effect.runPromise(runCli(["auth", "--help"], dependencies));
+      await Effect.runPromise(runCli(["auth", "login", "--help"], dependencies));
+    } finally {
+      console.log = originalLog;
+    }
+
+    expect(helpOutputs).toEqual(Array.from({ length: 4 }, () => guide.trimEnd()));
+    expect(credentialReads).toBe(0);
+    expect(fileReads).toBe(0);
+    expect(processSpawns).toBe(0);
+  });
+
   it("prints the version without resolving auth state", async () => {
     let credentialReads = 0;
     let fileReads = 0;
