@@ -1,4 +1,3 @@
-import { createConsola, LogLevels } from "consola/core";
 import * as Match from "effect/Match";
 
 import type { UsageLimitReport, UsageLimitRow } from "./limits.ts";
@@ -18,7 +17,14 @@ export function reportOutputMode(options: {
 }
 
 function cleanText(value: string): string {
-  return value.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ");
+  return value.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, " ");
+}
+
+function escapeMarkdownText(value: string): string {
+  return cleanText(value).replace(
+    /[!-/:-@[-`{-~]/g,
+    (character) => `&#${character.charCodeAt(0)};`,
+  );
 }
 
 function cleanAgentText(value: string): string {
@@ -59,73 +65,66 @@ export function formatAgentReport(report: UsageLimitReport): string {
   return lines.join("\n");
 }
 
-function formatWindowTable(row: UsageLimitRow): string[] {
+function formatWindowMarkdownTable(row: UsageLimitRow): string[] {
   const headers = ["Window", "Used", "Remaining", "Resets", "Duration"];
   const rows = row.windows.map((window) => [
-    cleanText(window.label),
+    escapeMarkdownText(window.label),
     `${window.usedPercent}%`,
     `${window.remainingPercent}%`,
-    window.resetsAt === undefined ? "—" : cleanText(window.resetsAt),
+    window.resetsAt === undefined ? "—" : escapeMarkdownText(window.resetsAt),
     window.windowDurationMins === undefined
       ? "—"
       : `${window.windowDurationMins} min`,
   ]);
-  const widths = headers.map((header, index) =>
-    Math.max(
-      Bun.stringWidth(header),
-      ...rows.map((cells) => Bun.stringWidth(cells[index] ?? "")),
-    ),
-  );
-  const rightAligned = new Set([1, 2]);
-  const formatRow = (cells: readonly string[]) =>
-    cells
-      .map((cell, index) => {
-        const width = widths[index] ?? 0;
-        const padding = width - Bun.stringWidth(cell);
-        const leftPadding = rightAligned.has(index) ? padding : 0;
-        const rightPadding = padding - leftPadding;
-        return `${" ".repeat(leftPadding)}${cell}${" ".repeat(rightPadding + (index === cells.length - 1 ? 0 : 2))}`;
-      })
-      .join("")
-      .trimEnd();
-  return [formatRow(headers), ...rows.map(formatRow)];
+  const formatRow = (cells: readonly string[]) => `| ${cells.join(" | ")} |`;
+  const alignment = ["---", "---:", "---:", "---", "---:"];
+  return [
+    formatRow(headers.map(escapeMarkdownText)),
+    formatRow(alignment),
+    ...rows.map(formatRow),
+  ];
 }
 
 export function formatHumanReport(report: UsageLimitReport): string {
-  const lines = [`Usage limits retrieved at ${cleanText(report.retrievedAt)}`];
+  const lines = [
+    `# Usage limits retrieved at ${escapeMarkdownText(report.retrievedAt)}`,
+  ];
   if (report.providers.length === 0) {
     lines.push("", "No provider usage limits were reported.");
   }
   for (const row of report.providers) {
     const source =
-      row.sourceId === undefined ? "" : ` · source ${cleanText(row.sourceId)}`;
+      row.sourceId === undefined
+        ? ""
+        : ` · source ${escapeMarkdownText(row.sourceId)}`;
     const metadata = [
-      row.enabled === undefined
-        ? undefined
-        : row.enabled
-          ? "enabled"
-          : "disabled",
+      row.enabled === undefined ? undefined : `enabled: ${row.enabled}`,
       row.unavailable
-        ? `unavailable (${row.reason ?? "invalidSnapshot"})`
-        : undefined,
+        ? `unavailable (${escapeMarkdownText(row.reason ?? "invalidSnapshot")})`
+        : "available",
       row.checkedAt === undefined
         ? undefined
-        : `checked ${cleanText(row.checkedAt)}`,
+        : `checked ${escapeMarkdownText(row.checkedAt)}`,
     ].filter((value) => value !== undefined);
     lines.push(
       "",
-      `${cleanText(row.label)} · ${cleanText(row.driver)} · ${cleanText(row.id)}${source}`,
+      `## ${escapeMarkdownText(row.label)} · ${escapeMarkdownText(row.driver)} · ${escapeMarkdownText(row.id)}${source}`,
+      "",
     );
-    if (metadata.length > 0) lines.push(`  ${metadata.join(" · ")}`);
+    lines.push(...metadata.map((value) => `- ${value}`));
     if (row.windows.length === 0) {
-      lines.push("  No usage windows reported.");
+      lines.push("", "No usage windows reported.");
     } else {
-      lines.push(...formatWindowTable(row));
+      lines.push("", ...formatWindowMarkdownTable(row));
     }
   }
   for (const notice of report.notices)
-    lines.push(`Notice: ${cleanText(notice)}`);
-  return lines.join("\n");
+    lines.push("", `Notice: ${escapeMarkdownText(notice)}`);
+  return Bun.markdown.ansi(lines.join("\n"), {
+    colors: Boolean(process.stdout.isTTY) && !("NO_COLOR" in process.env),
+    columns: 0,
+    hyperlinks: false,
+  });
 }
 
 export function printUsageReport(
@@ -135,14 +134,7 @@ export function printUsageReport(
   return Match.value(mode).pipe(
     Match.when("json", () => console.log(JSON.stringify(report, null, 2))),
     Match.when("agent", () => console.log(formatAgentReport(report))),
-    Match.when("human", () =>
-      createConsola({
-        level: LogLevels.verbose,
-        throttle: 0,
-        // Default reporters add metadata and interpret provider label markup.
-        reporters: [{ log: ({ args }) => console.log(...args) }],
-      }).log(formatHumanReport(report)),
-    ),
+    Match.when("human", () => console.log(formatHumanReport(report))),
     Match.exhaustive,
   );
 }
