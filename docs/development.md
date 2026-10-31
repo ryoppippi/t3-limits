@@ -3,7 +3,7 @@
 Run the test suite with Bun:
 
 ```sh
-bun test
+bun --no-env-file run test
 ```
 
 The Nix flake packages the TypeScript source and uses Bun at runtime. It

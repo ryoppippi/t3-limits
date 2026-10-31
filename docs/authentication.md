@@ -52,9 +52,9 @@ it does not revoke the issued server token. Tokens expire after one hour.
 To provide a token explicitly:
 
 ```sh
-bun run src/cli.ts --token-file /path/to/token --json
+bun --no-env-file run start --token-file /path/to/token --json
 T3_LIMITS_TOKEN="$(t3 auth session issue --base-dir "$HOME/.t3" --scope orchestration:read --ttl 1h --label t3-limits --token-only)" \
-  bun run src/cli.ts --json
+  bun --no-env-file run start --json
 ```
 
 The second form keeps the token out of terminal output and stores it only in
@@ -76,7 +76,9 @@ Run the Nix wrapper through `op run`:
 BUN_OPTIONS=--no-env-file op run --env-file=./t3-limits.env -- gh-nix nix run github:ryoppippi/t3-limits -- --json
 ```
 
-`BUN_OPTIONS=--no-env-file` prevents Bun from loading an unrelated `.env` from
-the current directory. A 1Password Developer Environment can instead mount a
-`.env` file for direct Bun execution; run `bun run src/cli.ts --json` inside
-that environment.
+The Nix wrapper disables implicit dotenv loading. For source execution, always
+pass `--no-env-file` to the outer Bun command too: Bun otherwise loads dotenv
+before launching a package script, which would pass those values to its child.
+`BUN_OPTIONS=--no-env-file` applies the same setting to the 1Password example.
+Use process environment injection through `op run` rather than a mounted
+dotenv file.
