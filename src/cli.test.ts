@@ -97,8 +97,9 @@ describe("t3-limits CLI", () => {
     const dependencies = noIoDependencies({ fileReads, processSpawns });
     const invalidCases = [
       ["--unknown-secret-looking-option", "do-not-print-this"],
+      ["--help-agent"],
       ["--help-for-agents"],
-      ["--help-agent", "--unknown"],
+      ["--helpForAgents", "--unknown"],
       ["unexpected-positional"],
       ["--home", "auth", "login"],
       ["--url", "auth", "logout"],
@@ -141,7 +142,7 @@ describe("t3-limits CLI", () => {
     try {
       await Effect.runPromise(runCli(["--help"], dependencies));
       await Effect.runPromise(runCli(["-h"], dependencies));
-      await Effect.runPromise(runCli(["--help-agent"], dependencies));
+      await Effect.runPromise(runCli(["--helpForAgents"], dependencies));
     } finally {
       console.log = originalLog;
     }
@@ -155,10 +156,11 @@ describe("t3-limits CLI", () => {
       "--url",
       "--home",
       "--token-file",
-      "--help-agent",
+      "--helpForAgents",
     ]) {
       expect(helpOutputs[0]).toContain(option);
     }
+    expect(helpOutputs[0]).not.toContain("--help-agent");
     expect(helpOutputs[0]).not.toContain("--help-for-agents");
     expect(helpOutputs[0]).not.toContain("# t3-limits guide");
     expect(helpOutputs[0]).not.toContain("Authentication");

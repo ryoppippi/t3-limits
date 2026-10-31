@@ -147,13 +147,13 @@ function createCommands(setInvocation: (invocation: CliInvocation) => void) {
         type: "string",
         description: "Read a bearer token from a file",
       },
-      "help-agent": {
+      helpForAgents: {
         type: "boolean",
         description: "Print the complete setup and usage guide",
       },
     },
     run: (ctx) => {
-      if (ctx.values["help-agent"] === true) {
+      if (ctx.values.helpForAgents === true) {
         setInvocation({ kind: "guide" });
         return;
       }
