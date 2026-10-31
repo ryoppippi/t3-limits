@@ -1,5 +1,7 @@
 import * as Effect from "effect/Effect";
-import * as Scope from "effect/Scope";
+import * as Match from "effect/Match";
+import * as Schema from "effect/Schema";
+import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
 import {
@@ -26,45 +28,52 @@ export type SessionSpawn = (
   },
 ) => SessionIssueChild;
 
-export const readBearerToken = Effect.fnUntraced(function* (input: {
+const BearerToken = Schema.Trim.check(Schema.isNonEmpty());
+
+const IssuedToken = BearerToken.check(
+  Schema.isPattern(/^[^\s\u0000-\u001f\u007f]+$/u),
+);
+
+const bearerToken =
+  (emptyMessage: string) =>
+  (token: string): Effect.Effect<string, AuthFailure> =>
+    Effect.mapError(
+      Schema.decodeUnknownEffect(BearerToken)(token),
+      () => new AuthFailure({ message: emptyMessage }),
+    );
+
+export const readBearerToken = (input: {
   readonly origin: string;
   readonly tokenFile?: string;
   readonly env: Readonly<Record<string, string | undefined>>;
   readonly readFile: (path: string) => Promise<string>;
   readonly onMissing: (origin: string) => Effect.Effect<string, AppFailure>;
-}): Effect.fn.Return<string, AppFailure> {
-  let token: string;
-  if (input.tokenFile !== undefined) {
-    const tokenFile = input.tokenFile;
-    token = yield* Effect.tryPromise({
-      try: () => input.readFile(tokenFile),
-      catch: () =>
-        new AuthFailure({ message: "The token file could not be read." }),
-    });
-    if (token.trim().length === 0) {
-      return yield* new AuthFailure({ message: "The token file is empty." });
-    }
-  } else if (input.env.T3_LIMITS_TOKEN !== undefined) {
-    token = input.env.T3_LIMITS_TOKEN;
-    if (token.trim().length === 0) {
-      return yield* new AuthFailure({
-        message: "T3_LIMITS_TOKEN is set but empty.",
-      });
-    }
-  } else {
-    token = yield* input.onMissing(input.origin);
-  }
+}): Effect.Effect<string, AppFailure> =>
+  Effect.suspend(() =>
+    Match.value({
+      tokenFile: input.tokenFile,
+      envToken: input.env.T3_LIMITS_TOKEN,
+    }).pipe(
+      Match.when({ tokenFile: Match.string }, ({ tokenFile }) =>
+        Effect.tryPromise({
+          try: () => input.readFile(tokenFile),
+          catch: () =>
+            new AuthFailure({ message: "The token file could not be read." }),
+        }).pipe(Effect.flatMap(bearerToken("The token file is empty."))),
+      ),
+      Match.when({ envToken: Match.string }, ({ envToken }) =>
+        bearerToken("T3_LIMITS_TOKEN is set but empty.")(envToken),
+      ),
+      Match.orElse(() =>
+        Effect.flatMap(
+          input.onMissing(input.origin),
+          bearerToken("Authentication required: the token must not be empty."),
+        ),
+      ),
+    ),
+  );
 
-  const trimmed = token.trim();
-  if (trimmed.length === 0) {
-    return yield* new AuthFailure({
-      message: "Authentication required: the token must not be empty.",
-    });
-  }
-  return trimmed;
-});
-
-const issueScopedTokenInScope = Effect.fnUntraced(function* (input: {
+export const issueScopedToken = Effect.fnUntraced(function* (input: {
   readonly executable: string;
   readonly baseDir: string;
   readonly spawn: SessionSpawn;
@@ -136,27 +145,15 @@ const issueScopedTokenInScope = Effect.fnUntraced(function* (input: {
     return yield* new ProcessFailure({ message: TOKEN_ISSUE_FAILURE });
   }
 
-  const bytes = new Uint8Array(captured.size);
-  let offset = 0;
-  for (const chunk of captured.chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  const token = yield* Effect.try({
-    try: () => new TextDecoder("utf-8", { fatal: true }).decode(bytes).trim(),
+  const text = yield* Effect.try({
+    try: () =>
+      new TextDecoder("utf-8", { fatal: true }).decode(
+        Buffer.concat(captured.chunks, captured.size),
+      ),
     catch: () => new ProcessFailure({ message: TOKEN_ISSUE_FAILURE }),
   });
-  if (token.length === 0 || /\s|[\u0000-\u001f\u007f]/u.test(token)) {
-    return yield* new ProcessFailure({ message: TOKEN_ISSUE_FAILURE });
-  }
-
-  return token;
-});
-
-export const issueScopedToken = (input: {
-  readonly executable: string;
-  readonly baseDir: string;
-  readonly spawn: SessionSpawn;
-  readonly timeoutMs?: number;
-}): Effect.Effect<string, ProcessFailure> =>
-  Effect.scoped(issueScopedTokenInScope(input));
+  return yield* Effect.mapError(
+    Schema.decodeUnknownEffect(IssuedToken)(text),
+    () => new ProcessFailure({ message: TOKEN_ISSUE_FAILURE }),
+  );
+}, Effect.scoped);
