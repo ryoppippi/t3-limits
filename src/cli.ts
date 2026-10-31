@@ -1,192 +1,25 @@
-import { homedir } from "node:os";
-import { isAbsolute, join } from "node:path";
 import { cli, define, type CommandContext } from "gunshi";
 import * as Effect from "effect/Effect";
-import * as Schema from "effect/Schema";
 import packageJson from "../package.json" with { type: "json" };
 import guide from "../docs/guide.md" with { type: "text" };
 
 import {
-  issueScopedToken,
-  readBearerToken,
-  type SessionSpawn,
-} from "./auth.ts";
-import {
-  AuthFailure,
   CliFailure,
-  InputFailure,
-  ProcessFailure,
-  RpcFailure,
   isAppFailure,
   safeFailureMessage,
   type AppFailure,
 } from "./errors.ts";
+import { type UsageLimitReport, type UsageLimitRow } from "./limits.ts";
 import {
-  projectUsageLimits,
-  type UsageLimitReport,
-  type UsageLimitRow,
-} from "./limits.ts";
-import {
-  canonicalLoopbackOrigin,
-  readUsageLimitStreams,
-  webSocketUrl,
-} from "./rpc.ts";
+  defaultUsageReportDependencies,
+  readUsageReport,
+  type UsageReportDependencies,
+  type UsageReportOptions,
+} from "./usage-report.ts";
 
-interface CliOptions {
+interface CliOptions extends UsageReportOptions {
   readonly json: boolean;
-  readonly fixture?: string;
-  readonly home?: string;
-  readonly origin?: string;
-  readonly tokenFile?: string;
 }
-
-function readJsonFile(
-  path: string,
-  message: string,
-): Effect.Effect<unknown, InputFailure> {
-  return Effect.flatMap(
-    Effect.tryPromise({
-      try: () => Bun.file(path).text(),
-      catch: () => new InputFailure({ message }),
-    }),
-    (contents) =>
-      Effect.mapError(
-        Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(
-          contents,
-        ),
-        () => new InputFailure({ message }),
-      ),
-  );
-}
-
-const FixtureSchema = Schema.Struct({
-  providers: Schema.optional(Schema.Unknown),
-  sources: Schema.optional(Schema.Unknown),
-});
-
-const fixtureReport = Effect.fnUntraced(function* (
-  path: string,
-): Effect.fn.Return<UsageLimitReport, InputFailure> {
-  const fixture = yield* readJsonFile(
-    path,
-    "Could not read the usage-limits fixture.",
-  );
-  const decoded = yield* Effect.mapError(
-    Schema.decodeUnknownEffect(FixtureSchema)(fixture),
-    () =>
-      new InputFailure({
-        message: "The usage-limits fixture must be a JSON object.",
-      }),
-  );
-  return yield* projectUsageLimits({
-    providers: decoded.providers,
-    sources: decoded.sources,
-  });
-});
-
-const RuntimeStateSchema = Schema.Struct({ origin: Schema.String });
-
-const runtimeOrigin = Effect.fnUntraced(function* (
-  home: string | undefined,
-): Effect.fn.Return<string, InputFailure> {
-  const statePath = join(
-    home ?? homedir(),
-    ".t3",
-    "userdata",
-    "server-runtime.json",
-  );
-  const runtime = yield* readJsonFile(
-    statePath,
-    "T3 server runtime state could not be read.",
-  );
-  const decoded = yield* Effect.mapError(
-    Schema.decodeUnknownEffect(RuntimeStateSchema)(runtime),
-    () =>
-      new InputFailure({
-        message: "T3 server runtime state does not contain a valid origin.",
-      }),
-  );
-  return decoded.origin;
-});
-
-interface CliDependencies {
-  readonly env: Readonly<Record<string, string | undefined>>;
-  readonly readFile: (path: string) => Promise<string>;
-  readonly spawn: SessionSpawn;
-  readonly readUsageLimits?: typeof readUsageLimitStreams;
-}
-
-const defaultDependencies: CliDependencies = {
-  env: Bun.env,
-  readFile: (path) => Bun.file(path).text(),
-  spawn: (command, options) => Bun.spawn([...command], options),
-};
-
-function configuredT3Executable(
-  value: string | undefined,
-): Effect.Effect<string, CliFailure> {
-  if (value === undefined) return Effect.succeed("t3");
-  if (!isAbsolute(value)) {
-    return Effect.fail(
-      new CliFailure({
-        message:
-          "T3CODE_CLI_PATH must be a non-empty absolute executable path.",
-      }),
-    );
-  }
-  return Effect.succeed(value);
-}
-
-const liveReport = Effect.fnUntraced(function* (
-  options: CliOptions,
-  dependencies: CliDependencies,
-): Effect.fn.Return<UsageLimitReport, AppFailure> {
-  const origin = options.origin ?? (yield* runtimeOrigin(options.home));
-  yield* webSocketUrl(origin, true);
-  const token = yield* readBearerToken({
-    origin,
-    tokenFile: options.tokenFile,
-    env: dependencies.env,
-    readFile: dependencies.readFile,
-    onMissing: (missingOrigin) =>
-      Effect.gen(function* () {
-        if (options.origin !== undefined) {
-          const discoveredOrigin = yield* runtimeOrigin(options.home);
-          const missingName = yield* canonicalLoopbackOrigin(missingOrigin);
-          const discoveredName =
-            yield* canonicalLoopbackOrigin(discoveredOrigin);
-          if (missingName !== discoveredName) {
-            return yield* Effect.fail(
-              new AuthFailure({
-                message:
-                  "The --url override does not match the runtime server. Provide T3_LIMITS_TOKEN or --token-file to use this URL without automatic token setup.",
-              }),
-            );
-          }
-        }
-        const executable = yield* configuredT3Executable(
-          dependencies.env.T3CODE_CLI_PATH,
-        );
-        return yield* issueScopedToken({
-          executable,
-          baseDir: join(options.home ?? homedir(), ".t3"),
-          spawn: dependencies.spawn,
-        });
-      }),
-  });
-  const data = yield* Effect.mapError(
-    (dependencies.readUsageLimits ?? readUsageLimitStreams)({
-      origin,
-      token,
-    }),
-    () =>
-      new RpcFailure({
-        message:
-          "Could not retrieve T3 usage limits. Check the server connection and supplied credential.",
-      }),
-  );
-  return yield* projectUsageLimits(data);
-});
 
 function cleanText(value: string): string {
   return value.replace(/[\u0000-\u001f\u007f]/g, " ");
@@ -344,7 +177,7 @@ function createCommands(setInvocation: (invocation: CliInvocation) => void) {
 
 export const runCli = Effect.fnUntraced(function* (
   args: readonly string[],
-  dependencies: CliDependencies = defaultDependencies,
+  dependencies: UsageReportDependencies = defaultUsageReportDependencies,
 ): Effect.fn.Return<void, AppFailure> {
   let invocation: CliInvocation | undefined;
   const parsed = yield* Effect.tryPromise({
@@ -389,11 +222,9 @@ export const runCli = Effect.fnUntraced(function* (
     console.log(guide.trimEnd());
     return;
   }
-  const report =
-    parsed.options.fixture === undefined
-      ? yield* liveReport(parsed.options, dependencies)
-      : yield* fixtureReport(parsed.options.fixture);
-  yield* printReport(report, parsed.options.json);
+  const { json, ...reportOptions } = parsed.options;
+  const report = yield* readUsageReport(reportOptions, dependencies);
+  yield* printReport(report, json);
 });
 
 if (import.meta.main) {
