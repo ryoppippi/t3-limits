@@ -2,23 +2,29 @@ import { expect, test } from "bun:test";
 import * as Effect from "effect/Effect";
 import { readUsageLimitStreams } from "./rpc.ts";
 
-test("uses Bun's real WebSocket transport with a bearer header", async () => {
-  let authorised = false;
-  const methods: string[] = [];
+test("uses Bun's real WebSocket transport with a bearer header and closes normally", async () => {
+  const upgrades: { readonly url: string; readonly auth: string | null }[] = [];
+  const received: unknown[] = [];
+  let resolveClosed: (code: number) => void = () => undefined;
+  const closed = new Promise<number>((resolve) => {
+    resolveClosed = resolve;
+  });
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
     fetch(request, server) {
-      authorised =
-        request.headers.get("authorization") === "Bearer synthetic-test-token";
+      upgrades.push({
+        url: new URL(request.url).pathname + new URL(request.url).search,
+        auth: request.headers.get("authorization"),
+      });
       if (server.upgrade(request)) return;
       return new Response(null, { status: 400 });
     },
     websocket: {
       message(socket, data) {
         const frame = JSON.parse(String(data));
+        received.push(frame._tag === "Request" ? frame.tag : frame._tag);
         if (frame._tag !== "Request") return;
-        methods.push(frame.tag);
         socket.send(
           JSON.stringify([
             {
@@ -42,6 +48,9 @@ test("uses Bun's real WebSocket transport with a bearer header", async () => {
           ]),
         );
       },
+      close(_socket, code) {
+        resolveClosed(code);
+      },
     },
   });
   try {
@@ -54,8 +63,19 @@ test("uses Bun's real WebSocket transport with a bearer header", async () => {
         }),
       ),
     ).toEqual({ providers: [], sources: [] });
-    expect(authorised).toBe(true);
-    expect(methods).toEqual(["subscribeServerConfig"]);
+    expect(await closed).toBe(1000);
+    expect(upgrades).toEqual([
+      {
+        url: "/ws?orchestrationProtocol=2",
+        auth: "Bearer synthetic-test-token",
+      },
+    ]);
+    expect(received).toEqual([
+      "subscribeServerConfig",
+      "Ack",
+      "Ack",
+      "Interrupt",
+    ]);
   } finally {
     server.stop(true);
   }
