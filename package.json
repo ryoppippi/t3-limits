@@ -10,6 +10,10 @@
     "generate:nix": "bun2nix -o nix/bun.nix"
   },
   "devDependencies": {
+    "@types/bun": "1.4.4",
     "bun2nix": "2.1.2"
+  },
+  "dependencies": {
+    "effect": "4.1.1"
   }
 }
