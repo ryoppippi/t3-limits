@@ -13,6 +13,14 @@
   ...
 }:
 {
+  "@antfu/install-pkg@2.1.0" = fetchurl {
+    url = "https://registry.npmjs.org/@antfu/install-pkg/-/install-pkg-2.1.0.tgz";
+    hash = "sha512-sdg9NxU3zR4Mnawfbc/x6GB5Wf17WYud5qOuEuxXjaKpYpMkISSJEjItGebXJ2bQ4DIcly4NYH23mtkGJjvKUw==";
+  };
+  "@gunshi/docs@0.37.3" = fetchurl {
+    url = "https://registry.npmjs.org/@gunshi/docs/-/docs-0.37.3.tgz";
+    hash = "sha512-zCnaKuC9pwDwX/miaLfmC0SGtAYbbXE5JvWqfIPNkwFfj+BuZkWKnvWY11Bb2CTiQV6peYkz9JKdw/+YzPqJug==";
+  };
   "@types/bun@1.4.4" = fetchurl {
     url = "https://registry.npmjs.org/@types/bun/-/bun-1.4.4.tgz";
     hash = "sha512-9wkRDXUXK124pEnAutE6n/l18j+i9GC5IAHK8TmX/2nlySETmky0OU6yL5U8pW1AoKh++AN9auDCr647BfurjQ==";
@@ -32,6 +40,14 @@
   "gunshi@0.37.3" = fetchurl {
     url = "https://registry.npmjs.org/gunshi/-/gunshi-0.37.3.tgz";
     hash = "sha512-uwm23bguqDcleEetknuQnF5okLcgmQPM3iv4aWVHTPDbiSs9shh02F079NCY0mWkrIRjHqNhgmzW6k0FCXhy1g==";
+  };
+  "package-manager-detector@1.9.0" = fetchurl {
+    url = "https://registry.npmjs.org/package-manager-detector/-/package-manager-detector-1.9.0.tgz";
+    hash = "sha512-zAMfbta9nPA8AKkA4WdmNAT8R8s6Dk0/xwPsqNnRidMFcLo1YkLuPDTgs2f64XdzS8vbLNnoJ+uUIkgbz7oRHA==";
+  };
+  "tinyexec@1.3.1" = fetchurl {
+    url = "https://registry.npmjs.org/tinyexec/-/tinyexec-1.3.1.tgz";
+    hash = "sha512-GCvB3aoys96IuDFBMcTB46JOR6mdMtAToqwiW8JlWhsoh1mhHi/xn9ss/Dg7N555GiJyEt2qzoG/NHCwM6h1EA==";
   };
   "undici-types@8.9.0" = fetchurl {
     url = "https://registry.npmjs.org/undici-types/-/undici-types-8.9.0.tgz";
