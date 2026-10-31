@@ -17,13 +17,9 @@
       url = "github:Kyure-A/agent-skills-nix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    effect-skills = {
-      url = "github:Effect-TS/skills";
-      flake = false;
-    };
   };
 
-  outputs = { nixpkgs, nix-bun, bun2nix, llm-agents, agent-skills, effect-skills, ... }:
+  outputs = { nixpkgs, nix-bun, bun2nix, llm-agents, agent-skills, ... }:
     let
       systems = [ "aarch64-darwin" "aarch64-linux" "x86_64-linux" ];
       eachSystem = nixpkgs.lib.genAttrs systems;
@@ -76,7 +72,7 @@
             touch "$out"
           '';
           agentSkillOutputs = import ./nix/agent-skills.nix {
-            inherit pkgs agent-skills effect-skills;
+            inherit pkgs agent-skills;
           };
         in {
           packages = {
