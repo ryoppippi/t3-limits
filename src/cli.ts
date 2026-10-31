@@ -4,6 +4,7 @@ import { cli, define, type CommandContext } from "gunshi";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import packageJson from "../package.json" with { type: "json" };
+import guide from "../docs/guide.md" with { type: "text" };
 
 import {
   issueAndStoreScopedToken,
@@ -170,32 +171,6 @@ function printReport(report: UsageLimitReport, json: boolean): Effect.Effect<voi
   });
 }
 
-const HELP = `${packageJson.name} — read usage limits from a running T3 Code server
-
-Usage:
-  ${packageJson.name} [--json] [--url <loopback-origin>] [--home <home-directory>]
-            [--token-file <path>]
-  ${packageJson.name} --fixture <path> [--json]
-  ${packageJson.name} auth login [--home <home-directory>] [--t3-bin <path>]
-  ${packageJson.name} auth logout [--home <home-directory> | --url <loopback-origin>]
-
-Options:
-  --json               Print an allowlisted JSON report.
-  --url <origin>       Connect to a loopback server origin.
-  --home <directory>   Use this OS home for <home>/.t3 runtime and auth state.
-  --token-file <path>  Read a bearer token; otherwise use T3_LIMITS_TOKEN or the OS secret store.
-  --fixture <path>     Read synthetic { providers, sources } data without connecting.
-  -h, --help           Show this help.
-`;
-
-const AUTH_HELP = `Usage:
-  ${packageJson.name} auth login [--home <home-directory>] [--t3-bin <path>]
-  ${packageJson.name} auth logout [--home <home-directory> | --url <loopback-origin>]
-
-login issues a one-hour orchestration:read token and stores it in the OS secret store.
-logout removes only the local token; it does not revoke the server session.
-`;
-
 interface AuthOptions {
   readonly command: "login" | "logout";
   readonly home?: string;
@@ -205,7 +180,8 @@ interface AuthOptions {
 
 type CliInvocation =
   | { readonly kind: "report"; readonly options: CliOptions }
-  | { readonly kind: "auth"; readonly options: AuthOptions };
+  | { readonly kind: "auth"; readonly options: AuthOptions }
+  | { readonly kind: "guide" };
 
 function parserFailure(message: string): never {
   throw new CliFailure({ safeMessage: message });
@@ -260,8 +236,13 @@ function createCommands(setInvocation: (invocation: CliInvocation) => void) {
       url: { type: "string", description: "Connect to a loopback server origin" },
       home: { type: "string", description: "Use this OS home for runtime and auth state" },
       "token-file": { type: "string", description: "Read a bearer token from a file" },
+      "help-for-agents": { type: "boolean", description: "Print the complete setup and usage guide" },
     },
     run: (ctx) => {
+      if (ctx.values["help-for-agents"] === true) {
+        setInvocation({ kind: "guide" });
+        return;
+      }
       const { fixture, home, url: origin } = ctx.values;
       const tokenFile = ctx.values["token-file"];
       setInvocation({
@@ -371,12 +352,12 @@ export function runCli(args: readonly string[], dependencies: CliDependencies = 
           strict: true,
           usageSilent: true,
           renderHeader: async () => "",
-          renderUsage: async (ctx) => ctx.commandPath[0] === "auth" ? AUTH_HELP : HELP,
+          renderUsage: async () => guide,
           renderValidationErrors: async () => "",
           onBeforeCommand: validateParsedArguments,
         });
         if (usage !== undefined) {
-          console.log(usage);
+          console.log(usage.trimEnd());
           return undefined;
         }
         if (invocation === undefined) {
@@ -390,6 +371,10 @@ export function runCli(args: readonly string[], dependencies: CliDependencies = 
     });
 
     if (parsed === undefined) return;
+    if (parsed.kind === "guide") {
+      console.log(guide.trimEnd());
+      return;
+    }
     if (parsed.kind === "auth") {
       yield* runAuth(parsed.options, dependencies);
       return;
