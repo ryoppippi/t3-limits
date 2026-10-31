@@ -53,22 +53,10 @@
           };
           bunFormatCheck = pkgs.runCommand "t3-limits-bun-format-check" {
             nativeBuildInputs = [ bun ];
-            src = pkgs.lib.fileset.toSource {
-              root = ./.;
-              fileset = pkgs.lib.fileset.unions [
-                ./.github/workflows/bun-ci.yaml
-                ./README.md
-                ./bunfig.toml
-                ./docs
-                ./package.json
-                ./scripts
-                ./src
-                ./tsconfig.json
-              ];
-            };
+            src = ./.;
           } ''
             cd "$src"
-            bun --no-env-file run fmt:check
+            bun --no-script fmt --check
             touch "$out"
           '';
           bunNixCheck = pkgs.runCommand "t3-limits-bun-nix-check" {
