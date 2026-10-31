@@ -89,24 +89,21 @@ async function runCliProcess(
 
 describe("t3-limits CLI", () => {
   it("prints a readable table by default outside an agent", async () => {
-    for (const level of ["0", "100"]) {
-      const child = await runCliProcess([], undefined, {
-        CONSOLA_LEVEL: level,
-        NODE_ENV: "test",
-      });
+    const child = await runCliProcess([]);
 
-      expect(child.exitCode).toBe(0);
-      expect(child.stderr).toBe("");
-      expect(child.stdout.startsWith("Usage limits retrieved at ")).toBe(true);
-      expect(child.stdout).toContain("Window");
-      expect(child.stdout).toContain("72.5%");
-      expect(child.stdout).toContain("Claude Code · claude · claude");
-      expect(child.stdout).toContain(
-        "CLI Proxy / account-a · claude · cliproxy-hub/account-a",
-      );
-      expect(child.stdout).not.toContain("Claude Code (claude · claude)");
-      expect(child.stdout).not.toContain("fixture-secret");
-    }
+    expect(child.exitCode).toBe(0);
+    expect(child.stderr).toBe("");
+    expect(child.stdout.startsWith("Usage limits retrieved at ")).toBe(true);
+    expect(child.stdout).toContain("Window");
+    expect(child.stdout).toContain("72.5%");
+    expect(child.stdout).toContain("Claude Code · claude · claude");
+    expect(child.stdout).toContain(
+      "CLI Proxy / account-a · claude · cliproxy-hub/account-a",
+    );
+    expect(child.stdout).toMatch(/\n\+-{2,}\+/);
+    expect(child.stdout).not.toMatch(/\u001b\[[0-9;]*m/);
+    expect(child.stdout).not.toContain("Claude Code (claude · claude)");
+    expect(child.stdout).not.toContain("fixture-secret");
   });
 
   it("preserves enumerated output when Gunshi detects an agent", async () => {

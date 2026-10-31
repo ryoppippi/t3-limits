@@ -40,68 +40,69 @@ const report = {
   notices: ["provider\u001b[31m failure\ncontinued"],
 } satisfies UsageLimitReport;
 
-describe("usage report output", () => {
-  it("formats readable per-provider tables and preserves report metadata", () => {
-    const lines = formatHumanReport(report).split("\n");
+function withoutAnsi(text: string): string {
+  return text.replace(/\u001b\[[0-9;]*m/g, "");
+}
 
-    expect(lines).toContain(
+describe("usage report output", () => {
+  it("renders native provider tables and preserves report metadata", () => {
+    const output = withoutAnsi(formatHumanReport(report));
+
+    expect(output).toContain(
       "Usage limits retrieved at 2026-10-31T12:00:00.000Z",
     );
-    expect(lines).toContain(
+    expect(output).toContain(
       "Claude Code · claude · claude · source provider-source-1",
     );
-    expect(lines).toContain(
-      "  enabled · unavailable (probeFailed) · checked 2026-10-31T11:58:00.000Z",
-    );
-    expect(lines).toContain("  disabled · unavailable (notReported)");
-    expect(lines).toContain("  No usage windows reported.");
-    expect(lines).toContain("Notice: provider [31m failure continued");
-
-    const header = lines.find((line) => line.startsWith("Window"));
-    const window = lines.find((line) => line.startsWith("5-hour session"));
-    expect(header).toBeDefined();
-    expect(window).toBeDefined();
-    expect(window).toContain("2026-10-31T15:00:00.000Z");
-    expect(window).toContain("300 min");
-    expect(window).toContain("72.5%");
-    expect(window).toContain("27.5%");
-    expect((window ?? "").indexOf("2026-10-31T15:00:00.000Z")).toBe(
-      (header ?? "").indexOf("Resets"),
-    );
-    expect((window ?? "").indexOf("72.5%") + Bun.stringWidth("72.5%")).toBe(
-      (header ?? "").indexOf("Used") + Bun.stringWidth("Used"),
-    );
-    expect((window ?? "").indexOf("27.5%") + Bun.stringWidth("27.5%")).toBe(
-      (header ?? "").indexOf("Remaining") + Bun.stringWidth("Remaining"),
-    );
-    expect(Bun.stringWidth(header ?? "")).toBeGreaterThan(
-      Bun.stringWidth("Window"),
-    );
+    expect(output).toContain("enabled: true");
+    expect(output).toContain("unavailable");
+    expect(output).toContain("probeFailed");
+    expect(output).toContain("checked 2026-10-31T11:58:00.000Z");
+    expect(output).toContain("Window");
+    expect(output).toContain("5-hour session");
+    expect(output).toContain("72.5%");
+    expect(output).toContain("27.5%");
+    expect(output).toContain("2026-10-31T15:00:00.000Z");
+    expect(output).toContain("300 min");
+    expect(output).toContain("enabled: false");
+    expect(output).toContain("notReported");
+    expect(output).toContain("No usage windows reported.");
+    expect(output).toContain("Notice: provider [31m failure continued");
+    expect(output).toMatch(/\n(?:\+-{2,}\+|┌─{2,})/);
   });
 
-  it("aligns columns by terminal width for non-ASCII labels", () => {
+  it("shows Markdown punctuation in provider fields and notices as literal text", () => {
     const provider = report.providers[0];
     const window = provider.windows[0];
-    const output = formatHumanReport({
-      ...report,
-      providers: [
-        {
-          ...provider,
-          windows: [
-            { ...window, label: "五時間" },
-            { ...window, label: "Week" },
-          ],
-        },
-      ],
-    });
-    const lines = output.split("\n");
-    const columns = ["五時間", "Week"].map((label) => {
-      const line = lines.find((line) => line.startsWith(label)) ?? "";
-      const resetIndex = line.indexOf("2026-10-31T15:00:00.000Z");
-      expect(resetIndex).toBeGreaterThan(0);
-      return Bun.stringWidth(line.slice(0, resetIndex));
-    });
-    expect(columns[0]).toBe(columns[1]);
+    const output = withoutAnsi(
+      formatHumanReport({
+        ...report,
+        providers: [
+          {
+            ...provider,
+            label: "Cap | `focus` _today_",
+            id: "instance [one](target)",
+            sourceId: "<source>",
+            windows: [
+              {
+                ...window,
+                label: "5h | `window`",
+              },
+            ],
+          },
+        ],
+        notices: ["See [provider](https://example.invalid) <raw> & _markup_."],
+      }),
+    );
+
+    expect(output).toContain("Cap | `focus` _today_");
+    expect(output).toContain("instance [one](target)");
+    expect(output).toContain("<source>");
+    expect(output).toContain("5h | `window`");
+    expect(output).toContain(
+      "See [provider](https://example.invalid) <raw> & _markup_.",
+    );
+    expect(output).not.toContain("provider (https://example.invalid)");
   });
 
   it("retains the existing enumerated output for detected agents", () => {
