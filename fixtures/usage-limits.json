@@ -1,0 +1,76 @@
+{
+  "providers": [
+    {
+      "instanceId": "claude",
+      "driver": "claude",
+      "displayName": "Claude Code",
+      "enabled": true,
+      "checkedAt": "2026-10-31T12:00:00.000Z",
+      "auth": { "email": "private@example.invalid", "token": "fixture-secret" },
+      "usageLimits": {
+        "checkedAt": "2026-10-31T11:58:00.000Z",
+        "credentialFingerprint": "fixture-fingerprint",
+        "resetCredits": { "availableCount": 4, "nextCreditId": "fixture-credit" },
+        "windows": [
+          {
+            "id": "session",
+            "kind": "session",
+            "label": "5-hour session",
+            "usedPercent": 72.5,
+            "resetsAt": "2026-10-31T15:00:00.000Z",
+            "windowDurationMins": 300,
+            "providerPrivateNote": "fixture-private-note"
+          }
+        ]
+      }
+    },
+    {
+      "instanceId": "codex",
+      "driver": "codex",
+      "displayName": "Codex",
+      "enabled": false,
+      "checkedAt": "2026-10-31T12:00:00.000Z",
+      "auth": { "apiKey": "fixture-another-secret" }
+    }
+  ],
+  "sources": [
+    {
+      "id": "cliproxy-hub",
+      "kind": "cliproxy",
+      "label": "CLI Proxy",
+      "checkedAt": "2026-10-31T11:59:00.000Z",
+      "error": "fixture-provider-error-must-not-be-printed",
+      "accounts": [
+        {
+          "id": "account-a",
+          "driver": "claude",
+          "email": "also-private@example.invalid",
+          "plan": "private-plan-name",
+          "usageLimits": {
+            "checkedAt": "2026-10-31T11:57:00.000Z",
+            "windows": [
+              {
+                "id": "weekly",
+                "kind": "weekly",
+                "label": "Weekly",
+                "usedPercent": 23,
+                "windowDurationMins": 10080,
+                "secretValue": "fixture-account-secret"
+              }
+            ],
+            "credentialFingerprint": "fixture-source-fingerprint",
+            "resetCredits": { "availableCount": 1 }
+          }
+        }
+      ]
+    },
+    {
+      "id": "broken-source",
+      "kind": "cliproxy",
+      "label": "Broken Source",
+      "checkedAt": "2026-10-31T11:56:00.000Z",
+      "error": "fixture-source-error-must-not-be-printed",
+      "accounts": []
+    }
+  ]
+}

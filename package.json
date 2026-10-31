@@ -1,0 +1,11 @@
+{
+  "name": "t3-limits",
+  "version": "0.1.0",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "bun run src/cli.ts",
+    "test": "bun test"
+  }
+}
