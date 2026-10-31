@@ -1,5 +1,25 @@
 {
   "nodes": {
+    "agent-skills": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1792594212,
+        "narHash": "sha256-XWx3R/AIeYdyZ3guuZVNqirEUPPpehICrIRV3VabR+U=",
+        "owner": "Kyure-A",
+        "repo": "agent-skills-nix",
+        "rev": "f48aa227f3d157ae3abda12cd9c4ab867f400419",
+        "type": "github"
+      },
+      "original": {
+        "owner": "Kyure-A",
+        "repo": "agent-skills-nix",
+        "type": "github"
+      }
+    },
     "bun2nix": {
       "inputs": {
         "flake-parts": "flake-parts",
@@ -55,6 +75,22 @@
         "owner": "Mic92",
         "ref": "llm-agents",
         "repo": "bun2nix",
+        "type": "github"
+      }
+    },
+    "effect-skills": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1791583519,
+        "narHash": "sha256-GSmGLOQSp4taxckrg7vfMTD/mbkfBYjv7oBsvDJdyck=",
+        "owner": "Effect-TS",
+        "repo": "skills",
+        "rev": "155c50c911f9c99c294ef8a4461981c5bbe6453e",
+        "type": "github"
+      },
+      "original": {
+        "owner": "Effect-TS",
+        "repo": "skills",
         "type": "github"
       }
     },
@@ -162,7 +198,9 @@
     },
     "root": {
       "inputs": {
+        "agent-skills": "agent-skills",
         "bun2nix": "bun2nix",
+        "effect-skills": "effect-skills",
         "llm-agents": "llm-agents",
         "nix-bun": "nix-bun",
         "nixpkgs": "nixpkgs"
