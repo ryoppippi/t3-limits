@@ -1,55 +1,47 @@
-import * as Data from "effect/Data";
+import * as Schema from "effect/Schema";
 
-export class InputFailure extends Data.TaggedError("InputFailure")<{
-  readonly safeMessage: string;
-}> {
-  override get message(): string {
-    return this.safeMessage;
-  }
-}
+export class InputFailure extends Schema.TaggedError<InputFailure>()(
+  "InputFailure",
+  {
+    message: Schema.String,
+  },
+) {}
 
-export class AuthFailure extends Data.TaggedError("AuthFailure")<{
-  readonly safeMessage: string;
-}> {
-  override get message(): string {
-    return this.safeMessage;
-  }
-}
+export class AuthFailure extends Schema.TaggedError<AuthFailure>()(
+  "AuthFailure",
+  {
+    message: Schema.String,
+  },
+) {}
 
-export class ProcessFailure extends Data.TaggedError("ProcessFailure")<{
-  readonly safeMessage: string;
-}> {
-  override get message(): string {
-    return this.safeMessage;
-  }
-}
+export class ProcessFailure extends Schema.TaggedError<ProcessFailure>()(
+  "ProcessFailure",
+  {
+    message: Schema.String,
+  },
+) {}
 
-export class RpcFailure extends Data.TaggedError("RpcFailure")<{
-  readonly safeMessage: string;
-}> {
-  override get message(): string {
-    return this.safeMessage;
-  }
-}
+export class RpcFailure extends Schema.TaggedError<RpcFailure>()("RpcFailure", {
+  message: Schema.String,
+}) {}
 
-export class CliFailure extends Data.TaggedError("CliFailure")<{
-  readonly safeMessage: string;
-}> {
-  override get message(): string {
-    return this.safeMessage;
-  }
-}
+export class CliFailure extends Schema.TaggedError<CliFailure>()("CliFailure", {
+  message: Schema.String,
+}) {}
 
 export type AppFailure =
   InputFailure | AuthFailure | ProcessFailure | RpcFailure | CliFailure;
 
+export const AppFailureSchema = Schema.Union([
+  InputFailure,
+  AuthFailure,
+  ProcessFailure,
+  RpcFailure,
+  CliFailure,
+]);
+
+export const isAppFailure = Schema.is(AppFailureSchema);
+
 export function safeFailureMessage(failure: AppFailure): string {
-  switch (failure._tag) {
-    case "InputFailure":
-    case "AuthFailure":
-    case "ProcessFailure":
-    case "RpcFailure":
-    case "CliFailure":
-      return failure.safeMessage;
-  }
+  return failure.message;
 }

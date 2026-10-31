@@ -26,6 +26,54 @@ async function makeHome(origin = "ws://localhost:8318/"): Promise<string> {
 }
 
 describe("live CLI authentication", () => {
+  it("keeps a token sentinel out of spawn and token-file failures on stderr", async () => {
+    const home = await makeHome("http://127.0.0.1:8318");
+    const sentinel = "token-secret-sentinel-4c2e";
+    const run = async (args: readonly string[], executable?: string) => {
+      const env = { ...Bun.env };
+      delete env.T3_LIMITS_TOKEN;
+      if (executable === undefined) delete env.T3CODE_CLI_PATH;
+      else env.T3CODE_CLI_PATH = executable;
+      const child = Bun.spawn({
+        cmd: ["bun", "--no-env-file", "src/cli.ts", ...args],
+        cwd: join(import.meta.dir, ".."),
+        env,
+        stdin: "ignore",
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const [stderr, status] = await Promise.all([
+        new Response(child.stderr).text(),
+        child.exited,
+      ]);
+      return { stderr, status };
+    };
+
+    try {
+      const spawnFailure = await run(
+        ["--url", "http://127.0.0.1:8318", "--home", home],
+        `/tmp/${sentinel}`,
+      );
+      const fileFailure = await run([
+        "--url",
+        "http://127.0.0.1:8318",
+        "--token-file",
+        `/tmp/${sentinel}`,
+      ]);
+
+      expect(spawnFailure.status).not.toBe(0);
+      expect(spawnFailure.stderr).toContain(
+        "Could not start the T3 CLI for scoped token issuance.",
+      );
+      expect(spawnFailure.stderr).not.toContain(sentinel);
+      expect(fileFailure.status).not.toBe(0);
+      expect(fileFailure.stderr).toContain("The token file could not be read.");
+      expect(fileFailure.stderr).not.toContain(sentinel);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
   it("issues a new one-minute scoped token for each retrieval and keeps it in memory", async () => {
     const home = await makeHome();
     const commands: (readonly string[])[] = [];
@@ -162,7 +210,7 @@ describe("live CLI authentication", () => {
           throw new Error("must not issue a replacement");
         },
         readUsageLimits: () =>
-          Effect.fail(new RpcFailure({ safeMessage: "rejected token detail" })),
+          Effect.fail(new RpcFailure({ message: "rejected token detail" })),
       }),
     ).rejects.toThrow("Check the server connection and supplied credential.");
     expect(spawns).toBe(0);
@@ -249,7 +297,7 @@ describe("live CLI authentication", () => {
           };
         },
         readUsageLimits: () =>
-          Effect.fail(new RpcFailure({ safeMessage: "private RPC detail" })),
+          Effect.fail(new RpcFailure({ message: "private RPC detail" })),
       }).then(
         () => undefined,
         (error: unknown) => error,

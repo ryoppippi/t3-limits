@@ -2,7 +2,10 @@ import { mkdir, unlink } from "node:fs/promises";
 import { join } from "node:path";
 
 import * as Effect from "effect/Effect";
+import * as Scope from "effect/Scope";
+import * as Stream from "effect/Stream";
 
+import { acquireChildProcess } from "../src/child-process.ts";
 import { ProcessFailure, safeFailureMessage } from "../src/errors.ts";
 
 const requiredFiles = [
@@ -12,49 +15,74 @@ const requiredFiles = [
   "usageLimitSourceId.ts",
 ] as const satisfies readonly string[];
 
-const prepareContracts = Effect.gen(function* () {
+const preparationFailure = (message: string) => new ProcessFailure({ message });
+
+const prepareContracts = Effect.fnUntraced(function* (): Effect.fn.Return<
+  void,
+  ProcessFailure,
+  Scope.Scope
+> {
   const command = Bun.which("nix");
   if (command === null) {
-    return yield* new ProcessFailure({
-      safeMessage: "Contract preparation requires Nix.",
-    });
+    return yield* preparationFailure("Contract preparation requires Nix.");
   }
 
-  const sourcePath = yield* Effect.tryPromise({
-    try: async () => {
-      const child = Bun.spawn({
-        cmd: [
-          command,
-          "build",
-          ".#contract-sources",
-          "--no-link",
-          "--print-out-paths",
-        ],
-        cwd: join(import.meta.dir, ".."),
-        stdin: "ignore",
-        stdout: "pipe",
-        stderr: "ignore",
-      });
-      const [exitCode, output] = await Promise.all([
-        child.exited,
-        new Response(child.stdout).text(),
-      ]);
-      if (exitCode !== 0) throw new Error("build failed");
-      const path = output.trim();
-      if (
-        !path.startsWith("/nix/store/") ||
-        path.includes("\n") ||
-        !path.endsWith("-t3-contract-sources")
-      ) {
-        throw new Error("invalid build output");
-      }
-      return path;
-    },
-    catch: () =>
-      new ProcessFailure({
-        safeMessage: "Could not build the pinned T3 contract source subset.",
-      }),
+  const managed = yield* acquireChildProcess(
+    Effect.try({
+      try: () =>
+        Bun.spawn({
+          cmd: [
+            command,
+            "build",
+            ".#contract-sources",
+            "--no-link",
+            "--print-out-paths",
+          ],
+          cwd: join(import.meta.dir, ".."),
+          stdin: "ignore",
+          stdout: "pipe",
+          stderr: "ignore",
+        }),
+      catch: () =>
+        preparationFailure(
+          "Could not start the pinned T3 contract source build.",
+        ),
+    }),
+    "SIGTERM",
+  );
+
+  const output = Stream.fromReadableStream({
+    evaluate: () => managed.child.stdout,
+    onError: () => preparationFailure("Could not read the Nix build output."),
+    releaseLockOnEnd: true,
+  }).pipe(
+    Stream.runFold(
+      () => "",
+      (captured, chunk) => captured + new TextDecoder().decode(chunk),
+    ),
+  );
+  const exitCode = Effect.tryPromise({
+    try: () => managed.exited,
+    catch: () => preparationFailure("The Nix contract source build failed."),
   });
+  const [capturedOutput, status] = yield* Effect.all([output, exitCode], {
+    concurrency: 2,
+  });
+  if (status !== 0) {
+    return yield* preparationFailure(
+      "Could not build the pinned T3 contract source subset.",
+    );
+  }
+  const sourcePath = capturedOutput.trim();
+  if (
+    !sourcePath.startsWith("/nix/store/") ||
+    sourcePath.includes("\n") ||
+    !sourcePath.endsWith("-t3-contract-sources")
+  ) {
+    return yield* preparationFailure(
+      "Could not build the pinned T3 contract source subset.",
+    );
+  }
 
   const sourceDirectory = join(
     import.meta.dir,
@@ -62,59 +90,86 @@ const prepareContracts = Effect.gen(function* () {
     ".generated",
     "t3-contracts",
   );
-  const sourceFiles = yield* Effect.tryPromise({
-    try: async () => {
-      const files = await Promise.all(
-        requiredFiles.map(async (name) => {
+  const files = yield* Effect.forEach(
+    [...requiredFiles, "LICENSE"],
+    (name) =>
+      Effect.tryPromise({
+        try: async () => {
           const file = Bun.file(join(sourcePath, name));
-          if (!(await file.exists())) throw new Error("missing contract file");
+          if (!(await file.exists())) throw new Error("missing file");
           return [name, await file.text()] as const;
-        }),
-      );
-      const license = Bun.file(join(sourcePath, "LICENSE"));
-      if (!(await license.exists())) throw new Error("missing licence");
-      return [...files, ["LICENSE", await license.text()] as const];
-    },
-    catch: () =>
-      new ProcessFailure({
-        safeMessage: "The pinned T3 contract source subset is incomplete.",
+        },
+        catch: () =>
+          preparationFailure(
+            "The pinned T3 contract source subset is incomplete.",
+          ),
       }),
-  });
+    { concurrency: 4 },
+  );
 
   yield* Effect.tryPromise({
-    try: async () => {
-      await mkdir(sourceDirectory, { recursive: true });
-      for (const [name, contents] of sourceFiles) {
-        await Bun.write(join(sourceDirectory, name), contents);
-      }
-
-      const optionalSource = Bun.file(join(sourcePath, "secretReference.ts"));
-      const optionalTarget = join(sourceDirectory, "secretReference.ts");
-      if (await optionalSource.exists()) {
-        await Bun.write(optionalTarget, await optionalSource.text());
-      } else {
-        try {
-          await unlink(optionalTarget);
-        } catch (error) {
-          if (
-            typeof error === "object" &&
-            error !== null &&
-            "code" in error &&
-            error.code === "ENOENT"
-          )
-            return;
-          throw error;
-        }
-      }
-    },
+    try: () => mkdir(sourceDirectory, { recursive: true }),
     catch: () =>
-      new ProcessFailure({
-        safeMessage: "Could not write the generated T3 contract sources.",
-      }),
+      preparationFailure("Could not write the generated T3 contract sources."),
   });
+  yield* Effect.forEach(
+    files,
+    ([name, contents]) =>
+      Effect.tryPromise({
+        try: () => Bun.write(join(sourceDirectory, name), contents),
+        catch: () =>
+          preparationFailure(
+            "Could not write the generated T3 contract sources.",
+          ),
+      }),
+    { concurrency: 4, discard: true },
+  );
+
+  const optionalSource = Bun.file(join(sourcePath, "secretReference.ts"));
+  const optionalTarget = join(sourceDirectory, "secretReference.ts");
+  if (
+    yield* Effect.tryPromise({
+      try: () => optionalSource.exists(),
+      catch: () =>
+        preparationFailure(
+          "The pinned T3 contract source subset is incomplete.",
+        ),
+    })
+  ) {
+    const contents = yield* Effect.tryPromise({
+      try: () => optionalSource.text(),
+      catch: () =>
+        preparationFailure(
+          "The pinned T3 contract source subset is incomplete.",
+        ),
+    });
+    yield* Effect.tryPromise({
+      try: () => Bun.write(optionalTarget, contents),
+      catch: () =>
+        preparationFailure(
+          "Could not write the generated T3 contract sources.",
+        ),
+    });
+  } else if (
+    yield* Effect.tryPromise({
+      try: () => Bun.file(optionalTarget).exists(),
+      catch: () =>
+        preparationFailure(
+          "Could not write the generated T3 contract sources.",
+        ),
+    })
+  ) {
+    yield* Effect.tryPromise({
+      try: () => unlink(optionalTarget),
+      catch: () =>
+        preparationFailure(
+          "Could not write the generated T3 contract sources.",
+        ),
+    });
+  }
 });
 
-const program = Effect.matchEffect(prepareContracts, {
+const program = Effect.matchEffect(Effect.scoped(prepareContracts()), {
   onSuccess: () =>
     Effect.sync(() =>
       console.log("Prepared the pinned T3 contract source subset."),
