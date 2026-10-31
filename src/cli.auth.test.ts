@@ -73,12 +73,22 @@ describe("t3-limits auth commands", () => {
   });
 
   it("does not allow login with a URL override", async () => {
+    let credentialReads = 0;
+    let fileReads = 0;
+    let processSpawns = 0;
     await expect(runCliEffect(["auth", "login", "--url", "http://localhost:8318"], {
       env: {},
-      secrets: { get: async () => null, set: async () => {}, delete: async () => true },
-      readFile: async () => "",
-      spawn: () => { throw new Error("must not spawn"); },
-    })).rejects.toThrow("auth login discovers the server origin from runtime state");
+      secrets: {
+        get: async () => { credentialReads += 1; return null; },
+        set: async () => { credentialReads += 1; },
+        delete: async () => { credentialReads += 1; return true; },
+      },
+      readFile: async () => { fileReads += 1; return ""; },
+      spawn: () => { processSpawns += 1; throw new Error("must not spawn"); },
+    })).rejects.toThrow("Invalid command-line arguments.");
+    expect(credentialReads).toBe(0);
+    expect(fileReads).toBe(0);
+    expect(processSpawns).toBe(0);
   });
 
   it("automatically issues and stores one token when the secret store has no token", async () => {
@@ -195,8 +205,8 @@ describe("t3-limits auth commands", () => {
     expect(secretReads).toBe(0);
   });
 
-  it("does not expose an unknown auth flag in a missing-value error", async () => {
-    await expect(runCliEffect(["auth", "login", "--untrusted-flag"])).rejects.toThrow("Expected an option value.");
+  it("rejects an unknown auth flag without echoing it", async () => {
+    await expect(runCliEffect(["auth", "login", "--untrusted-flag"])).rejects.toThrow("Invalid command-line arguments.");
     await expect(runCliEffect(["auth", "login", "--untrusted-flag"])).rejects.not.toThrow("--untrusted-flag");
   });
 

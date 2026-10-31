@@ -65,6 +65,7 @@ stdenvNoCC.mkDerivation {
     install -Dm644 LICENSE "$out/share/licenses/t3-limits/LICENSE"
     install -Dm644 .generated/t3-contracts/LICENSE "$out/share/licenses/t3-limits/t3code-LICENSE"
     install -Dm644 node_modules/effect/LICENSE "$out/share/licenses/t3-limits/effect-LICENSE"
+    install -Dm644 node_modules/gunshi/LICENSE "$out/share/licenses/t3-limits/gunshi-LICENSE"
     mkdir -p "$out/share/t3-limits"
     cp -R docs fixtures "$out/share/t3-limits/"
 
