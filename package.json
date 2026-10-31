@@ -8,11 +8,10 @@
     "start": "bun --no-env-file run src/cli.ts",
     "contracts:prepare": "bun --no-env-file scripts/prepare-contracts.ts",
     "test": "bun --no-env-file test",
-    "generate:nix": "bun2nix -o nix/bun.nix"
+    "generate:nix": "nix run .#bun2nix -- -o nix/bun.nix"
   },
   "devDependencies": {
-    "@types/bun": "1.4.4",
-    "bun2nix": "2.1.2"
+    "@types/bun": "1.4.4"
   },
   "dependencies": {
     "effect": "4.1.1",

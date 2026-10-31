@@ -6,7 +6,7 @@
     nix-bun.url = "github:ryoppippi/nix-bun";
     nix-bun.inputs.nixpkgs.follows = "nixpkgs";
     bun2nix = {
-      url = "github:nix-community/bun2nix";
+      url = "github:nix-community/bun2nix/0456acb1b7394fc14c414b056aa889df5124943a";
       inputs.nixpkgs.follows = "nixpkgs";
     };
     llm-agents = {
@@ -45,6 +45,7 @@
         in {
           default = cli;
           t3-limits = cli;
+          bun2nix = bun2nix.packages.${system}.default;
           contract-sources = contractSources;
         });
     };
