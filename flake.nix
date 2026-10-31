@@ -5,35 +5,24 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     nix-bun.url = "github:ryoppippi/nix-bun";
     nix-bun.inputs.nixpkgs.follows = "nixpkgs";
+    bun2nix = {
+      url = "github:nix-community/bun2nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
-  outputs = { nixpkgs, nix-bun, ... }:
+  outputs = { nixpkgs, nix-bun, bun2nix, ... }:
     let
-      package = builtins.fromJSON (builtins.readFile ./package.json);
       systems = [ "aarch64-darwin" "aarch64-linux" "x86_64-linux" ];
       eachSystem = nixpkgs.lib.genAttrs systems;
     in {
       packages = eachSystem (system:
         let
-          pkgs = import nixpkgs { inherit system; };
-          cli = pkgs.stdenvNoCC.mkDerivation {
-            pname = package.name;
-            version = package.version;
-            src = ./.;
-            nativeBuildInputs = [ pkgs.makeWrapper ];
-            dontBuild = true;
-            installPhase = ''
-              mkdir -p "$out/share/t3-limits" "$out/bin"
-              cp -R src fixtures docs README.md LICENSE "$out/share/t3-limits/"
-              makeWrapper ${nix-bun.packages.${system}.bun}/bin/bun "$out/bin/t3-limits" \
-                --add-flags "--no-env-file run $out/share/t3-limits/src/cli.ts"
-            '';
-            meta = {
-              description = "Read usage limits from a running T3 Code server";
-              mainProgram = "t3-limits";
-              license = pkgs.lib.licenses.mit;
-              platforms = systems;
-            };
+          pkgs = nixpkgs.legacyPackages.${system};
+          cli = pkgs.callPackage ./package.nix {
+            bun = nix-bun.packages.${system}.bun;
+            bun2nix = bun2nix.packages.${system}.default;
+            supportedSystems = systems;
           };
         in {
           default = cli;

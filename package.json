@@ -6,6 +6,10 @@
   "type": "module",
   "scripts": {
     "start": "bun --no-env-file run src/cli.ts",
-    "test": "bun --no-env-file test"
+    "test": "bun --no-env-file test",
+    "generate:nix": "bun2nix -o nix/bun.nix"
+  },
+  "devDependencies": {
+    "bun2nix": "2.1.2"
   }
 }
