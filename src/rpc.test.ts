@@ -1,486 +1,385 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import { Predicate } from "effect";
 
-import {
-  readUsageLimitStreams,
-  webSocketUrl,
-  type UsageLimitWebSocketConstructor,
-} from "./rpc.ts";
+import { readUsageLimitStreams, webSocketUrl } from "./rpc.ts";
 
-type MockEvent = { readonly data?: unknown };
-type MockListener = (event: MockEvent) => void;
-type MockHandler = (socket: MockWebSocket, frame: unknown) => void;
-type MockOptions = {
-  readonly openOnMicrotask?: boolean;
-  readonly onConstructed?: () => void;
-};
+type Frame = Readonly<Record<string, unknown>>;
 
-function parseMessage(message: string): unknown {
-  return JSON.parse(message) as unknown;
+interface FixtureSocket {
+  send(data: string | Uint8Array): void;
+  close(code?: number, reason?: string): void;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+interface Fixture {
+  readonly origin: string;
+  readonly frames: Frame[];
+  readonly closes: number[];
+  readonly upgrades: { readonly url: string; readonly auth: string | null }[];
+  readonly closed: Promise<number>;
 }
 
-class MockWebSocket {
-  static readonly OPEN = 1;
+const servers: { stop(force: boolean): void }[] = [];
+afterEach(() => {
+  for (const server of servers.splice(0)) server.stop(true);
+});
 
-  readonly sent: Record<string, unknown>[] = [];
-  readyState = 0;
-  closed = false;
-  private readonly listeners = new Map<string, Set<MockListener>>();
-
-  constructor(
-    readonly url: string,
-    readonly options: { readonly headers: Readonly<Record<string, string>> },
-    private readonly onClientFrame: MockHandler,
-    openOnMicrotask = true,
-  ) {
-    if (openOnMicrotask)
-      queueMicrotask(() => {
-        this.readyState = MockWebSocket.OPEN;
-        this.emit("open", {});
-      });
-  }
-
-  addEventListener(type: string, listener: MockListener): void {
-    const listeners = this.listeners.get(type) ?? new Set<MockListener>();
-    listeners.add(listener);
-    this.listeners.set(type, listeners);
-  }
-
-  removeEventListener(type: string, listener: MockListener): void {
-    this.listeners.get(type)?.delete(listener);
-  }
-
-  listenerCount(): number {
-    return [...this.listeners.values()].reduce(
-      (count, listeners) => count + listeners.size,
-      0,
-    );
-  }
-
-  send(data: string): void {
-    const decoded = parseMessage(data);
-    const frames = Array.isArray(decoded) ? decoded : [decoded];
-    for (const frame of frames) {
-      if (!isRecord(frame)) continue;
-      this.sent.push(frame);
-      this.onClientFrame(this, frame);
-    }
-  }
-
-  close(): void {
-    this.closed = true;
-    this.readyState = 3;
-    this.emit("close", {});
-  }
-
-  serverMessage(message: unknown): void {
-    if (this.readyState !== MockWebSocket.OPEN) return;
-    this.emit("message", { data: JSON.stringify(message) });
-  }
-
-  serverRawMessage(message: string): void {
-    if (this.readyState !== MockWebSocket.OPEN) return;
-    this.emit("message", { data: message });
-  }
-
-  serverData(data: unknown): void {
-    if (this.readyState !== MockWebSocket.OPEN) return;
-    this.emit("message", { data });
-  }
-
-  private emit(type: string, event: MockEvent): void {
-    for (const listener of this.listeners.get(type) ?? []) listener(event);
-  }
-}
-
-function mockConstructor(
-  onClientFrame: MockHandler,
-  sockets: MockWebSocket[],
-  mockOptions: MockOptions = {},
-): UsageLimitWebSocketConstructor {
-  class TrackedMockWebSocket extends MockWebSocket {
-    constructor(
-      url: string,
-      options: { readonly headers: Readonly<Record<string, string>> },
-    ) {
-      super(url, options, onClientFrame, mockOptions.openOnMicrotask);
-      sockets.push(this);
-      mockOptions.onConstructed?.();
-    }
-  }
-  return TrackedMockWebSocket as unknown as UsageLimitWebSocketConstructor;
-}
-
-describe("T3 usage-limit WebSocket protocol", () => {
-  it("subscribes once, acknowledges each chunk, handles Ping/Pong, and waits for both initial events", async () => {
-    const sockets: MockWebSocket[] = [];
-    let requestId: string | number | undefined;
-    let ackCount = 0;
-    let resolveAcks: (() => void) | undefined;
-    const twoAcks = new Promise<void>((resolve) => {
-      resolveAcks = resolve;
-    });
-    const webSocketConstructor = mockConstructor((socket, frame) => {
-      if (!isRecord(frame)) return;
-      if (frame._tag === "Request") {
-        if (typeof frame.id !== "string" && typeof frame.id !== "number")
-          return;
-        requestId = frame.id;
-        socket.serverMessage({
-          _tag: "Chunk",
-          requestId,
-          values: [
-            {
-              version: 1,
-              type: "usageLimitSourcesUpdated",
-              payload: {
-                sources: [{ id: "source-one", label: "Hub", accounts: [] }],
-              },
-            },
-          ],
-        });
-      } else if (frame._tag === "Ping") {
-        socket.serverMessage([
-          { _tag: "Pong" },
-          {
-            _tag: "Chunk",
-            requestId,
-            values: [
-              {
-                version: 1,
-                type: "snapshot",
-                config: {
-                  providers: [{ instanceId: "claude", driver: "claude" }],
-                },
-              },
-            ],
-          },
-        ]);
-      } else if (frame._tag === "Ack") {
-        ackCount += 1;
-        if (ackCount === 2) resolveAcks?.();
-      }
-    }, sockets);
-
-    const response = await Effect.runPromise(
-      readUsageLimitStreams({
-        origin: "http://127.0.0.1:8318",
-        token: "test-token",
-        timeoutMs: 1_000,
-        pingIntervalMs: 10,
-        webSocketConstructor,
-      }),
-    );
-    await twoAcks;
-
-    expect(response.providers).toEqual([
-      { instanceId: "claude", driver: "claude" },
-    ]);
-    expect(response.sources).toEqual([
-      { id: "source-one", label: "Hub", accounts: [] },
-    ]);
-    expect(sockets).toHaveLength(1);
-    expect(sockets[0]?.url).toBe(
-      "ws://127.0.0.1:8318/ws?orchestrationProtocol=2",
-    );
-    expect(sockets[0]?.options.headers).toEqual({
-      Authorization: "Bearer test-token",
-    });
-    const requests =
-      sockets[0]?.sent.filter((frame) => frame._tag === "Request") ?? [];
-    expect(requests).toEqual([
-      {
-        _tag: "Request",
-        id: requestId,
-        tag: "subscribeServerConfig",
-        payload: { usageLimitSources: true, workspaceSnapshotsOnDemand: true },
-        headers: [],
-      },
-    ]);
-    expect(
-      sockets[0]?.sent.filter((frame) => frame._tag === "Ack"),
-    ).toHaveLength(2);
-    expect(sockets[0]?.sent.some((frame) => frame._tag === "Ping")).toBe(true);
-    expect(sockets[0]?.sent.some((frame) => frame._tag === "Pong")).toBe(false);
-    expect(sockets[0]?.closed).toBe(true);
-    expect(sockets[0]?.listenerCount()).toBe(0);
+function serve(
+  onFrame: (socket: FixtureSocket, frame: Frame) => void,
+  options: { readonly beforeUpgrade?: Promise<void> } = {},
+): Fixture {
+  const frames: Frame[] = [];
+  const closes: number[] = [];
+  const upgrades: Fixture["upgrades"] = [];
+  let resolveClosed: (code: number) => void = () => undefined;
+  const closed = new Promise<number>((resolve) => {
+    resolveClosed = resolve;
   });
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    async fetch(request, server) {
+      upgrades.push({
+        url: request.url,
+        auth: request.headers.get("authorization"),
+      });
+      await options.beforeUpgrade;
+      if (server.upgrade(request)) return;
+      return new Response(null, { status: 400 });
+    },
+    websocket: {
+      message(socket, data) {
+        const decoded: unknown = JSON.parse(String(data));
+        for (const frame of Array.isArray(decoded) ? decoded : [decoded]) {
+          if (!Predicate.isObject(frame)) continue;
+          frames.push(frame as Frame);
+          onFrame(socket, frame as Frame);
+        }
+      },
+      close(_socket, code) {
+        closes.push(code);
+        resolveClosed(code);
+      },
+    },
+  });
+  servers.push(server);
+  return {
+    origin: `http://127.0.0.1:${server.port}`,
+    frames,
+    closes,
+    upgrades,
+    closed,
+  };
+}
 
-  it("decodes a batched server frame and sanitises an RPC failure", async () => {
-    const sockets: MockWebSocket[] = [];
-    const webSocketConstructor = mockConstructor((socket, frame) => {
-      if (!isRecord(frame)) return;
-      if (
-        frame._tag !== "Request" ||
-        (typeof frame.id !== "string" && typeof frame.id !== "number")
-      )
-        return;
-      socket.serverMessage([
-        {
-          _tag: "Chunk",
-          requestId: frame.id,
-          values: [{ version: 1, type: "snapshot", config: { providers: [] } }],
-        },
-        {
-          _tag: "Chunk",
-          requestId: frame.id,
-          values: [
-            {
-              version: 1,
-              type: "usageLimitSourcesUpdated",
-              payload: { sources: [] },
-            },
-          ],
-        },
-      ]);
-    }, sockets);
+const snapshot = (providers: unknown[]) => ({
+  version: 1,
+  type: "snapshot",
+  config: { providers },
+});
+const sourcesUpdated = (sources: unknown[]) => ({
+  version: 1,
+  type: "usageLimitSourcesUpdated",
+  payload: { sources },
+});
+const chunk = (requestId: unknown, values: unknown[]) => ({
+  _tag: "Chunk",
+  requestId,
+  values,
+});
 
-    const response = await Effect.runPromise(
-      readUsageLimitStreams({
-        origin: "http://127.0.0.1:8318",
-        token: "test-token",
-        timeoutMs: 100,
-        webSocketConstructor,
-      }),
-    );
-    expect(response).toEqual({ providers: [], sources: [] });
-    expect(
-      sockets[0]?.sent.filter((frame) => frame._tag === "Ack"),
-    ).toHaveLength(2);
+function onRequest(
+  respond: (socket: FixtureSocket, requestId: unknown) => void,
+): (socket: FixtureSocket, frame: Frame) => void {
+  return (socket, frame) => {
+    if (frame._tag === "Request") respond(socket, frame.id);
+  };
+}
 
-    const failedConstructor = mockConstructor((socket, frame) => {
-      if (!isRecord(frame)) return;
-      if (
-        frame._tag === "Request" &&
-        (typeof frame.id === "string" || typeof frame.id === "number")
-      ) {
-        socket.serverMessage({
-          _tag: "Exit",
-          requestId: frame.id,
-          exit: {
-            _tag: "Failure",
-            cause: [
-              {
-                _tag: "Fail",
-                error: { message: "private provider token=do-not-print" },
-              },
-            ],
-          },
-        });
+function read(fixture: Fixture, timeoutMs = 1_000) {
+  return Effect.runPromise(
+    readUsageLimitStreams({
+      origin: fixture.origin,
+      token: "synthetic-test-token",
+      timeoutMs,
+    }),
+  );
+}
+
+async function failure(promise: Promise<unknown>): Promise<unknown> {
+  return promise.then(
+    () => {
+      throw new Error("expected the read to fail");
+    },
+    (reason: unknown) => reason,
+  );
+}
+
+function expectRedacted(error: unknown, sentinel: string): void {
+  expect(error).toMatchObject({ _tag: "RpcFailure" });
+  expect(String(error)).not.toContain(sentinel);
+  expect(JSON.stringify(error)).not.toContain(sentinel);
+  expect(
+    JSON.stringify(Predicate.isObject(error) ? error.cause : undefined) ?? "",
+  ).not.toContain(sentinel);
+}
+
+const tags = (fixture: Fixture) => fixture.frames.map((frame) => frame._tag);
+
+describe("T3 usage-limit RPC client", () => {
+  it("subscribes once, acknowledges each chunk, and waits for both initial events in any order", async () => {
+    const fixture = serve((socket, frame) => {
+      if (frame._tag === "Request") {
+        socket.send(JSON.stringify({ _tag: "Pong" }));
+        socket.send(
+          JSON.stringify(
+            chunk(frame.id, [
+              sourcesUpdated([{ id: "source-one", label: "Hub" }]),
+            ]),
+          ),
+        );
+      } else if (frame._tag === "Ack" && tags(fixture).length === 2) {
+        socket.send(
+          JSON.stringify(
+            chunk(frame.requestId, [
+              snapshot([{ instanceId: "claude", driver: "claude" }]),
+            ]),
+          ),
+        );
       }
-    }, []);
-    const failure = Effect.runPromise(
-      readUsageLimitStreams({
-        origin: "http://127.0.0.1:8318",
-        token: "test-token",
-        timeoutMs: 100,
-        webSocketConstructor: failedConstructor,
-      }),
-    );
-    await expect(failure).rejects.toThrow(
-      "subscription ended before the initial data arrived",
-    );
-    const error = await failure.catch((reason: unknown) => reason);
-    expect(error).toMatchObject({ _tag: "RpcFailure" });
-    expect(String(error)).not.toContain("do-not-print");
-    expect(sockets[0]?.closed).toBe(true);
-    expect(sockets[0]?.listenerCount()).toBe(0);
+    });
 
-    const malformedConstructor = mockConstructor((socket, frame) => {
-      if (!isRecord(frame)) return;
-      if (frame._tag === "Request")
-        socket.serverRawMessage("not-valid-json token=do-not-print");
-    }, []);
-    const malformed = Effect.runPromise(
-      readUsageLimitStreams({
-        origin: "http://127.0.0.1:8318",
-        token: "test-token",
-        timeoutMs: 100,
-        webSocketConstructor: malformedConstructor,
-      }),
-    );
-    await expect(malformed).rejects.toThrow(
-      "Could not read the T3 usage-limit stream.",
-    );
-    const malformedError = await malformed.catch((reason: unknown) => reason);
-    expect(String(malformedError)).not.toContain("do-not-print");
+    await expect(read(fixture)).resolves.toEqual({
+      providers: [{ instanceId: "claude", driver: "claude" }],
+      sources: [{ id: "source-one", label: "Hub" }],
+    });
+    expect(await fixture.closed).toBe(1000);
+
+    const [request] = fixture.frames;
+    expect(fixture.upgrades).toHaveLength(1);
+    expect(request).toEqual({
+      _tag: "Request",
+      id: request?.id,
+      tag: "subscribeServerConfig",
+      payload: { usageLimitSources: true, workspaceSnapshotsOnDemand: true },
+      headers: [],
+    });
+    expect(tags(fixture)).toEqual(["Request", "Ack", "Ack", "Interrupt"]);
+    expect(fixture.frames[1]).toEqual({ _tag: "Ack", requestId: request?.id });
+    expect(fixture.frames[3]).toMatchObject({ requestId: request?.id });
   });
 
   it("returns complete data before later frames in the same batch", async () => {
-    const sockets: MockWebSocket[] = [];
-    const webSocketConstructor = mockConstructor((socket, frame) => {
-      if (!isRecord(frame) || frame._tag !== "Request") return;
-      socket.serverMessage([
-        {
-          _tag: "Chunk",
-          requestId: frame.id,
-          values: [{ type: "snapshot", config: { providers: [] } }],
-        },
-        {
-          _tag: "Chunk",
-          requestId: frame.id,
-          values: [
-            {
-              type: "usageLimitSourcesUpdated",
-              payload: { sources: [] },
-            },
-          ],
-        },
-        { _tag: "Exit", requestId: frame.id },
-        { _tag: "Defect", cause: "rpc-defect-secret-token-sentinel" },
-      ]);
-    }, sockets);
+    const sentinel = "rpc-defect-secret-token-sentinel";
+    const fixture = serve(
+      onRequest((socket, requestId) =>
+        socket.send(
+          JSON.stringify([
+            chunk(requestId, [snapshot([])]),
+            chunk(requestId, [sourcesUpdated([])]),
+            { _tag: "Exit", requestId, exit: { _tag: "Success", value: null } },
+            { _tag: "Defect", defect: sentinel },
+          ]),
+        ),
+      ),
+    );
 
-    await expect(
+    await expect(read(fixture)).resolves.toEqual({
+      providers: [],
+      sources: [],
+    });
+  });
+
+  it("decodes binary frames and ignores other subscriptions and unknown events", async () => {
+    const fixture = serve(
+      onRequest((socket, requestId) => {
+        socket.send(
+          JSON.stringify([
+            chunk("other", [snapshot(["wrong"])]),
+            { _tag: "Exit", requestId: "other" },
+            { _tag: "Unknown" },
+            chunk(requestId, [42, { type: "unrelated" }]),
+          ]),
+        );
+        socket.send(
+          new TextEncoder().encode(
+            JSON.stringify(chunk(requestId, [snapshot(["binary"])])),
+          ),
+        );
+        socket.send(
+          JSON.stringify(chunk(requestId, [sourcesUpdated(["text"])])),
+        );
+      }),
+    );
+
+    await expect(read(fixture)).resolves.toEqual({
+      providers: ["binary"],
+      sources: ["text"],
+    });
+  });
+
+  it("rejects invalid known events with a specific message", async () => {
+    const invalidSnapshot = serve(
+      onRequest((socket, requestId) =>
+        socket.send(
+          JSON.stringify(chunk(requestId, [{ type: "snapshot", config: {} }])),
+        ),
+      ),
+    );
+    await expect(read(invalidSnapshot)).rejects.toThrow(
+      "T3 server sent an invalid usage-limits snapshot.",
+    );
+
+    const invalidSources = serve(
+      onRequest((socket, requestId) =>
+        socket.send(
+          JSON.stringify(
+            chunk(requestId, [
+              { type: "usageLimitSourcesUpdated", payload: {} },
+            ]),
+          ),
+        ),
+      ),
+    );
+    await expect(read(invalidSources)).rejects.toThrow(
+      "T3 server sent invalid usage-limit source data.",
+    );
+  });
+
+  it("redacts server failures, defects, malformed frames, and close reasons", async () => {
+    const sentinel = "private provider token=do-not-print";
+    const cases = [
+      {
+        message: "T3 usage-limit subscription failed.",
+        respond: (socket: FixtureSocket, requestId: unknown) =>
+          socket.send(
+            JSON.stringify({
+              _tag: "Exit",
+              requestId,
+              exit: {
+                _tag: "Failure",
+                cause: [
+                  {
+                    _tag: "Fail",
+                    error: { _tag: "AuthError", message: sentinel },
+                  },
+                ],
+              },
+            }),
+          ),
+      },
+      {
+        message: "T3 usage-limit subscription failed.",
+        respond: (socket: FixtureSocket) =>
+          socket.send(JSON.stringify({ _tag: "Defect", defect: sentinel })),
+      },
+      {
+        message: "Could not read the T3 usage-limit stream.",
+        respond: (socket: FixtureSocket) =>
+          socket.send(`not-valid-json ${sentinel}`),
+      },
+      {
+        message:
+          "The T3 server closed the connection before the initial data arrived.",
+        respond: (socket: FixtureSocket) => socket.close(1011, sentinel),
+      },
+    ];
+
+    for (const { message, respond } of cases) {
+      const error = await failure(read(serve(onRequest(respond))));
+      expect(String(error)).toContain(message);
+      expectRedacted(error, sentinel);
+    }
+  });
+
+  it("fails when the subscription ends before both initial events", async () => {
+    const fixture = serve(
+      onRequest((socket, requestId) =>
+        socket.send(
+          JSON.stringify([
+            chunk(requestId, [snapshot([])]),
+            { _tag: "Exit", requestId, exit: { _tag: "Success", value: null } },
+          ]),
+        ),
+      ),
+    );
+
+    await expect(read(fixture)).rejects.toThrow(
+      "T3 usage-limit subscription ended before the initial data arrived.",
+    );
+  });
+
+  it("does not reconnect after the server drops the connection", async () => {
+    const fixture = serve(onRequest((socket) => socket.close(1011)));
+
+    await expect(read(fixture, 2_000)).rejects.toThrow(
+      "The T3 server closed the connection",
+    );
+    await Bun.sleep(700);
+    expect(fixture.upgrades).toHaveLength(1);
+  });
+
+  it("does not retry a rejected WebSocket upgrade", async () => {
+    let attempts = 0;
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch() {
+        attempts += 1;
+        return new Response("upgrade-secret-token-sentinel", { status: 401 });
+      },
+    });
+    servers.push(server);
+
+    const error = await failure(
       Effect.runPromise(
         readUsageLimitStreams({
-          origin: "http://127.0.0.1:8318",
-          token: "test-token",
-          timeoutMs: 100,
-          webSocketConstructor,
+          origin: `http://127.0.0.1:${server.port}`,
+          token: "synthetic-test-token",
+          timeoutMs: 2_000,
         }),
       ),
-    ).resolves.toEqual({ providers: [], sources: [] });
-    expect(
-      sockets[0]?.sent.filter((frame) => frame._tag === "Ack"),
-    ).toHaveLength(2);
+    );
+    expect(String(error)).toContain("Could not connect to the T3 server.");
+    expectRedacted(error, "upgrade-secret-token-sentinel");
+    await Bun.sleep(700);
+    expect(attempts).toBe(1);
+  });
+
+  it("times out a silent subscription and closes the socket", async () => {
+    const fixture = serve(() => undefined);
+
+    await expect(read(fixture, 100)).rejects.toThrow(
+      "Timed out waiting for T3 usage limits.",
+    );
+    expect(await fixture.closed).toBe(1000);
+    expect(tags(fixture)).toEqual(["Request", "Interrupt"]);
   });
 
   it("cancels before the socket opens without subscribing", async () => {
-    const sockets: MockWebSocket[] = [];
-    let resolveConstructed: (() => void) | undefined;
-    const constructed = new Promise<void>((resolve) => {
-      resolveConstructed = resolve;
+    let release: () => void = () => undefined;
+    const beforeUpgrade = new Promise<void>((resolve) => {
+      release = resolve;
     });
-    const webSocketConstructor = mockConstructor(() => undefined, sockets, {
-      openOnMicrotask: false,
-      onConstructed: () => resolveConstructed?.(),
-    });
+    const fixture = serve(() => undefined, { beforeUpgrade });
     const fiber = Effect.runFork(
       readUsageLimitStreams({
-        origin: "http://127.0.0.1:8318",
-        token: "test-token",
+        origin: fixture.origin,
+        token: "synthetic-test-token",
         timeoutMs: 1_000,
-        webSocketConstructor,
       }),
     );
 
-    await constructed;
+    while (fixture.upgrades.length === 0) await Bun.sleep(5);
     await Effect.runPromise(Fiber.interrupt(fiber));
+    release();
+    await Bun.sleep(50);
 
-    expect(sockets[0]?.closed).toBe(true);
-    expect(sockets[0]?.listenerCount()).toBe(0);
-    expect(sockets[0]?.sent).toEqual([]);
+    expect(fixture.frames).toEqual([]);
   });
 
-  it("closes a socket when listener registration fails partway through", async () => {
-    const sockets: MockWebSocket[] = [];
-    class RegistrationFailureSocket extends MockWebSocket {
-      override addEventListener(type: string, listener: MockListener): void {
-        if (type === "message") throw new Error("registration failed");
-        super.addEventListener(type, listener);
-      }
-    }
-    class TrackedRegistrationFailureSocket extends RegistrationFailureSocket {
-      constructor(
-        url: string,
-        options: { readonly headers: Readonly<Record<string, string>> },
-      ) {
-        super(url, options, () => undefined, false);
-        sockets.push(this);
-      }
-    }
-    const webSocketConstructor =
-      TrackedRegistrationFailureSocket as unknown as UsageLimitWebSocketConstructor;
-
-    await expect(
-      Effect.runPromise(
-        readUsageLimitStreams({
-          origin: "http://127.0.0.1:8318",
-          token: "test-token",
-          timeoutMs: 100,
-          webSocketConstructor,
-        }),
-      ),
-    ).rejects.toThrow("Could not open a WebSocket");
-    expect(sockets[0]?.closed).toBe(true);
-    expect(sockets[0]?.listenerCount()).toBe(0);
-    expect(sockets[0]?.sent).toEqual([]);
-  });
-
-  it("fails safely when the heartbeat send throws", async () => {
-    const sockets: MockWebSocket[] = [];
-    class ThrowingSocket extends MockWebSocket {
-      override send(data: string): void {
-        const frame = parseMessage(data);
-        if (isRecord(frame) && frame._tag === "Ping")
-          throw new Error("heartbeat-secret-token-sentinel");
-        super.send(data);
-      }
-    }
-    const webSocketConstructor = (() => {
-      class TrackedThrowingSocket extends ThrowingSocket {
-        constructor(
-          url: string,
-          options: { readonly headers: Readonly<Record<string, string>> },
-        ) {
-          super(url, options, () => undefined);
-          sockets.push(this);
-        }
-      }
-      return TrackedThrowingSocket as unknown as UsageLimitWebSocketConstructor;
-    })();
-
-    await expect(
-      Effect.runPromise(
-        readUsageLimitStreams({
-          origin: "http://127.0.0.1:8318",
-          token: "test-token",
-          timeoutMs: 100,
-          pingIntervalMs: 1,
-          webSocketConstructor,
-        }),
-      ),
-    ).rejects.toThrow("The T3 server connection failed.");
-    expect(sockets[0]?.closed).toBe(true);
-    expect(sockets[0]?.listenerCount()).toBe(0);
-  });
-
-  it("redacts a defect received before initial data is complete", async () => {
-    const sentinel = "rpc-secret-token-sentinel-29ba";
-    const sockets: MockWebSocket[] = [];
-    const webSocketConstructor = mockConstructor((socket, frame) => {
-      if (isRecord(frame) && frame._tag === "Request")
-        socket.serverMessage({ _tag: "Defect", cause: sentinel });
-    }, sockets);
-    const failure = await Effect.runPromise(
-      readUsageLimitStreams({
-        origin: "http://127.0.0.1:8318",
-        token: "test-token",
-        timeoutMs: 100,
-        webSocketConstructor,
-      }),
-    ).then(
-      () => undefined,
-      (reason: unknown) => reason,
-    );
-
-    expect(String(failure)).toContain("subscription failed");
-    expect(String(failure)).not.toContain(sentinel);
-    expect(JSON.stringify(failure)).not.toContain(sentinel);
-    expect(
-      (isRecord(failure) ? JSON.stringify(failure.cause) : undefined) ?? "",
-    ).not.toContain(sentinel);
-    expect(sockets[0]?.closed).toBe(true);
-    expect(sockets[0]?.listenerCount()).toBe(0);
-  });
-
-  it("rejects remote and credential-bearing origins and bounds waiting for initial sources", async () => {
+  it("rejects remote and credential-bearing origins before connecting", () => {
     expect(() => Effect.runSync(webSocketUrl("https://example.com"))).toThrow(
       "loopback address",
     );
@@ -490,108 +389,8 @@ describe("T3 usage-limit WebSocket protocol", () => {
     expect(() =>
       Effect.runSync(webSocketUrl("http://127.0.0.1:8318/path")),
     ).toThrow("without credentials");
-
-    const sockets: MockWebSocket[] = [];
-    const webSocketConstructor = mockConstructor(() => undefined, sockets);
-    await expect(
-      Effect.runPromise(
-        readUsageLimitStreams({
-          origin: "http://127.0.0.1:8318",
-          token: "test-token",
-          timeoutMs: 20,
-          pingIntervalMs: 1_000,
-          webSocketConstructor,
-        }),
-      ),
-    ).rejects.toThrow("Timed out waiting for T3 usage limits.");
-    expect(sockets[0]?.closed).toBe(true);
-    expect(sockets[0]?.listenerCount()).toBe(0);
-  });
-
-  it("interrupts a pending Blob decode without acknowledging late data", async () => {
-    const sockets: MockWebSocket[] = [];
-    let releaseDecode: (() => void) | undefined;
-    let decodingStarted: (() => void) | undefined;
-    let requestId: unknown;
-    const started = new Promise<void>((resolve) => {
-      decodingStarted = resolve;
-    });
-    class DelayedBlob extends Blob {
-      override text(): Promise<string> {
-        decodingStarted?.();
-        return new Promise((resolve) => {
-          releaseDecode = () =>
-            resolve(JSON.stringify({ _tag: "Chunk", requestId, values: [] }));
-        });
-      }
-    }
-    const webSocketConstructor = mockConstructor((socket, frame) => {
-      if (isRecord(frame) && frame._tag === "Request") {
-        requestId = frame.id;
-        socket.serverData(new DelayedBlob());
-      }
-    }, sockets);
-    const fiber = Effect.runFork(
-      readUsageLimitStreams({
-        origin: "http://127.0.0.1:8318",
-        token: "test-token",
-        timeoutMs: 1_000,
-        pingIntervalMs: 1_000,
-        webSocketConstructor,
-      }),
+    expect(Effect.runSync(webSocketUrl("https://localhost:8318"))).toBe(
+      "wss://localhost:8318/ws?orchestrationProtocol=2",
     );
-
-    await started;
-    await Effect.runPromise(Fiber.interrupt(fiber));
-    releaseDecode?.();
-    await new Promise<void>((resolve) => setTimeout(resolve, 0));
-
-    expect(sockets[0]?.sent.some((frame) => frame._tag === "Ack")).toBe(false);
-    expect(sockets[0]?.closed).toBe(true);
-    expect(sockets[0]?.listenerCount()).toBe(0);
-  });
-
-  it("does not acknowledge a Blob that finishes after timeout", async () => {
-    const sockets: MockWebSocket[] = [];
-    let releaseDecode: (() => void) | undefined;
-    let decodingStarted: (() => void) | undefined;
-    const started = new Promise<void>((resolve) => {
-      decodingStarted = resolve;
-    });
-    class DelayedBlob extends Blob {
-      override text(): Promise<string> {
-        decodingStarted?.();
-        return new Promise((resolve) => {
-          releaseDecode = () =>
-            resolve(
-              JSON.stringify({ _tag: "Chunk", requestId: "late", values: [] }),
-            );
-        });
-      }
-    }
-    const webSocketConstructor = mockConstructor((socket, frame) => {
-      if (isRecord(frame) && frame._tag === "Request")
-        socket.serverData(new DelayedBlob());
-    }, sockets);
-    const response = Effect.runPromise(
-      readUsageLimitStreams({
-        origin: "http://127.0.0.1:8318",
-        token: "test-token",
-        timeoutMs: 10,
-        pingIntervalMs: 1_000,
-        webSocketConstructor,
-      }),
-    );
-
-    await started;
-    await expect(response).rejects.toThrow(
-      "Timed out waiting for T3 usage limits.",
-    );
-    releaseDecode?.();
-    await new Promise<void>((resolve) => setTimeout(resolve, 0));
-
-    expect(sockets[0]?.sent.some((frame) => frame._tag === "Ack")).toBe(false);
-    expect(sockets[0]?.closed).toBe(true);
-    expect(sockets[0]?.listenerCount()).toBe(0);
   });
 });

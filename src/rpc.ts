@@ -1,16 +1,27 @@
 import { isIP } from "node:net";
-import { randomUUID } from "node:crypto";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 import * as Match from "effect/Match";
 import * as Option from "effect/Option";
-import * as Queue from "effect/Queue";
+import * as References from "effect/References";
+import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import {
+  Rpc,
+  RpcClient,
+  RpcClientError,
+  RpcGroup,
+  RpcSerialization,
+} from "effect/rpc";
+import * as Socket from "effect/socket/Socket";
 
 import { RpcFailure } from "./errors.ts";
 
 export const USAGE_LIMIT_TIMEOUT_MS = 10_000;
 const ORCHESTRATION_PROTOCOL_VERSION = "2";
+const PING_INTERVAL_MS = 5_000;
 
 const RPC_MESSAGES = {
   invalidUrl: "The T3 server URL is invalid.",
@@ -18,9 +29,7 @@ const RPC_MESSAGES = {
     "The T3 server URL must be an origin without credentials, path, query, or fragment.",
   loopback: "The --url override must point to a loopback address.",
   timeout: "Timed out waiting for T3 usage limits.",
-  open: "Could not open a WebSocket to the T3 server.",
   connect: "Could not connect to the T3 server.",
-  subscribe: "Could not subscribe to T3 usage limits.",
   connection: "The T3 server connection failed.",
   closed:
     "The T3 server closed the connection before the initial data arrived.",
@@ -31,23 +40,19 @@ const RPC_MESSAGES = {
   snapshot: "T3 server sent an invalid usage-limits snapshot.",
 } as const satisfies Record<string, string>;
 
-interface WebSocketClientOptions {
-  readonly headers: Readonly<Record<string, string>>;
-}
-
-type BunWebSocketConstructor = new (
-  url: string,
-  options: WebSocketClientOptions,
-) => WebSocket;
-
-export type UsageLimitWebSocketConstructor = BunWebSocketConstructor;
-
-const ServerFrameSchema = Schema.Struct({
-  _tag: Schema.String,
-  requestId: Schema.optional(Schema.Unknown),
-  values: Schema.optional(Schema.Unknown),
-  exit: Schema.optional(Schema.Unknown),
+// Only the read-only cached subscription is declared, so the client cannot
+// issue refreshes, probes, or any other T3 RPC.
+const SubscribeServerConfig = Rpc.make("subscribeServerConfig", {
+  payload: {
+    usageLimitSources: Schema.Literal(true),
+    workspaceSnapshotsOnDemand: Schema.Literal(true),
+  },
+  success: Schema.Unknown,
+  error: Schema.Unknown,
+  stream: true,
 });
+
+const ServerConfigRpcs = RpcGroup.make(SubscribeServerConfig);
 
 const SnapshotEventSchema = Schema.Struct({
   type: Schema.Literal("snapshot"),
@@ -123,139 +128,121 @@ export const canonicalLoopbackOrigin = Effect.fnUntraced(function* (
   return socketUrl.origin;
 });
 
-function decodeFrame(data: unknown): Effect.Effect<unknown, RpcFailure> {
-  const text =
-    typeof data === "string"
-      ? Effect.succeed(data)
-      : data instanceof ArrayBuffer
-        ? Effect.succeed(new TextDecoder().decode(data))
-        : ArrayBuffer.isView(data)
-          ? Effect.succeed(
-              new TextDecoder().decode(
-                new Uint8Array(data.buffer, data.byteOffset, data.byteLength),
-              ),
-            )
-          : data instanceof Blob
-            ? Effect.tryPromise({
-                try: () => data.text(),
-                catch: () => new RpcFailure({ message: RPC_MESSAGES.read }),
-              })
-            : Effect.fail(new RpcFailure({ message: RPC_MESSAGES.read }));
-  return Effect.flatMap(text, (value) =>
-    Effect.mapError(
-      Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(value),
-      () => new RpcFailure({ message: RPC_MESSAGES.read }),
-    ),
-  );
-}
-
 export interface UsageLimitStreams {
   readonly providers: readonly unknown[];
   readonly sources: readonly unknown[];
 }
 
-type SocketEvent =
-  | { readonly _tag: "Open"; readonly socket: WebSocket }
-  | {
-      readonly _tag: "Message";
-      readonly socket: WebSocket;
-      readonly data: unknown;
-    }
-  | { readonly _tag: "Error"; readonly socket: WebSocket }
-  | { readonly _tag: "Close"; readonly socket: WebSocket }
-  | {
-      readonly _tag: "HeartbeatFailure";
-      readonly socket: WebSocket;
-      readonly failure: RpcFailure;
-    };
+interface InitialState {
+  readonly providers: Option.Option<readonly unknown[]>;
+  readonly sources: Option.Option<readonly unknown[]>;
+}
 
-function socketEvents(input: {
-  readonly url: string;
-  readonly token: string;
-  readonly webSocketConstructor: UsageLimitWebSocketConstructor;
-  readonly pingIntervalMs: number;
-}): Stream.Stream<SocketEvent, RpcFailure> {
-  return Stream.callback<SocketEvent, RpcFailure>(
-    Effect.fnUntraced(function* (queue) {
-      const client = yield* Effect.acquireRelease(
-        Effect.try({
-          try: () => {
-            const socket = new input.webSocketConstructor(input.url, {
-              headers: { Authorization: `Bearer ${input.token}` },
-            });
-            const onOpen = () =>
-              Queue.offerUnsafe(queue, { _tag: "Open", socket });
-            const onMessage = (event: MessageEvent) =>
-              Queue.offerUnsafe(queue, {
-                _tag: "Message",
-                socket,
-                data: event.data,
-              });
-            const onError = () =>
-              Queue.offerUnsafe(queue, { _tag: "Error", socket });
-            const onClose = () =>
-              Queue.offerUnsafe(queue, { _tag: "Close", socket });
-            try {
-              socket.addEventListener("open", onOpen);
-              socket.addEventListener("message", onMessage);
-              socket.addEventListener("error", onError);
-              socket.addEventListener("close", onClose);
-            } catch (cause) {
-              socket.removeEventListener("open", onOpen);
-              socket.removeEventListener("message", onMessage);
-              socket.removeEventListener("error", onError);
-              socket.removeEventListener("close", onClose);
-              try {
-                socket.close();
-              } catch {
-                // Preserve the registration failure for Effect.try.
-              }
-              throw cause;
-            }
-            return { socket, onOpen, onMessage, onError, onClose };
-          },
-          catch: () => new RpcFailure({ message: RPC_MESSAGES.open }),
-        }),
-        (resource) =>
-          Effect.sync(() => {
-            resource.socket.removeEventListener("open", resource.onOpen);
-            resource.socket.removeEventListener("message", resource.onMessage);
-            resource.socket.removeEventListener("error", resource.onError);
-            resource.socket.removeEventListener("close", resource.onClose);
-            try {
-              resource.socket.close();
-            } catch {
-              // The socket may already be closed when the stream scope ends.
-            }
-          }),
-      );
-      const { socket } = client;
+const projectEvent = Effect.fnUntraced(function* (
+  state: InitialState,
+  event: unknown,
+): Effect.fn.Return<
+  readonly [InitialState, ReadonlyArray<UsageLimitStreams>],
+  RpcFailure
+> {
+  const header = Option.getOrUndefined(
+    Schema.decodeUnknownOption(EventHeaderSchema)(event),
+  );
+  const next = yield* Match.value(header?.type).pipe(
+    Match.when("snapshot", () =>
+      Schema.decodeUnknownEffect(SnapshotEventSchema)(event).pipe(
+        Effect.map((snapshot) => ({
+          ...state,
+          providers: Option.some(snapshot.config.providers),
+        })),
+        Effect.mapError(
+          () => new RpcFailure({ message: RPC_MESSAGES.snapshot }),
+        ),
+      ),
+    ),
+    Match.when("usageLimitSourcesUpdated", () =>
+      Schema.decodeUnknownEffect(SourcesEventSchema)(event).pipe(
+        Effect.map((sourceEvent) => ({
+          ...state,
+          sources: Option.some(sourceEvent.payload.sources),
+        })),
+        Effect.mapError(
+          () => new RpcFailure({ message: RPC_MESSAGES.sources }),
+        ),
+      ),
+    ),
+    Match.orElse(() => Effect.succeed(state)),
+  );
+  return Option.isSome(next.providers) && Option.isSome(next.sources)
+    ? [next, [{ providers: next.providers.value, sources: next.sources.value }]]
+    : [next, []];
+});
 
-      yield* Effect.forever(
-        Effect.sleep(input.pingIntervalMs).pipe(
-          Effect.andThen(
-            Effect.try({
-              try: () => {
-                if (socket.readyState === WebSocket.OPEN)
-                  socket.send(JSON.stringify({ _tag: "Ping" }));
-              },
-              catch: () => new RpcFailure({ message: RPC_MESSAGES.connection }),
-            }),
-          ),
-        ),
-      ).pipe(
-        Effect.catch((failure) =>
-          Effect.sync(() =>
-            Queue.offerUnsafe(queue, {
-              _tag: "HeartbeatFailure",
-              socket,
-              failure,
-            }),
-          ),
-        ),
-        Effect.forkScoped,
-      );
-    }),
+// Server-provided errors, defects, and close reasons can carry provider text
+// or credentials, so only fixed messages ever leave this module.
+function safeFailure(error: unknown): RpcFailure {
+  if (error instanceof RpcFailure) return error;
+  if (!(error instanceof RpcClientError.RpcClientError))
+    return new RpcFailure({ message: RPC_MESSAGES.failed });
+  return Match.value(error.reason._tag).pipe(
+    Match.when(
+      "SocketOpenError",
+      () => new RpcFailure({ message: RPC_MESSAGES.connect }),
+    ),
+    Match.when(
+      "SocketCloseError",
+      () => new RpcFailure({ message: RPC_MESSAGES.closed }),
+    ),
+    Match.when(
+      "RpcClientDefect",
+      () => new RpcFailure({ message: RPC_MESSAGES.read }),
+    ),
+    Match.orElse(() => new RpcFailure({ message: RPC_MESSAGES.connection })),
+  );
+}
+
+function redactCause<A>(
+  effect: Effect.Effect<A, unknown>,
+): Effect.Effect<A, RpcFailure> {
+  return Effect.catchCause(effect, (cause) => {
+    if (Cause.hasInterruptsOnly(cause))
+      return Effect.failCause(cause as Cause.Cause<never>);
+    const error = Cause.findErrorOption(cause);
+    return Effect.fail(
+      Option.isSome(error)
+        ? safeFailure(error.value)
+        : new RpcFailure({ message: RPC_MESSAGES.failed }),
+    );
+  });
+}
+
+// Bun's WebSocket accepts the handshake headers the DOM typing omits.
+const BunWebSocket = WebSocket as unknown as new (
+  url: string,
+  options?: Socket.WebSocketConstructorOptions,
+) => Socket.WebSocketLike;
+
+const bunWebSocketConstructor = Layer.succeed(Socket.WebSocketConstructor)(
+  (url, options) => new BunWebSocket(url, options),
+);
+
+function protocolLayer(url: string, token: string, timeoutMs: number) {
+  // The overall deadline must be what ends a silent server, so the library's
+  // own open and ping timeouts are kept beyond it.
+  const libraryTimeoutMs = timeoutMs + PING_INTERVAL_MS;
+  return RpcClient.layerProtocolSocket({
+    pingInterval: PING_INTERVAL_MS,
+    pingTimeout: libraryTimeoutMs,
+    retryTransientErrors: false,
+    retryPolicy: Schedule.recurs(0),
+  }).pipe(
+    Layer.provide([
+      Socket.layerWebSocket(url, {
+        headers: { Authorization: `Bearer ${token}` },
+        openTimeout: libraryTimeoutMs,
+      }).pipe(Layer.provide(bunWebSocketConstructor)),
+      RpcSerialization.layerJson,
+    ]),
   );
 }
 
@@ -263,145 +250,38 @@ export const readUsageLimitStreams = Effect.fnUntraced(function* (input: {
   readonly origin: string;
   readonly token: string;
   readonly timeoutMs?: number;
-  readonly pingIntervalMs?: number;
-  readonly webSocketConstructor?: UsageLimitWebSocketConstructor;
 }): Effect.fn.Return<UsageLimitStreams, RpcFailure> {
   const url = yield* webSocketUrl(input.origin, true);
-  const requestId = `t3-limits-${randomUUID()}`;
-  const WebSocketClient =
-    input.webSocketConstructor ??
-    (WebSocket as unknown as BunWebSocketConstructor);
-  type InitialState = {
-    readonly providers: Option.Option<readonly unknown[]>;
-    readonly sources: Option.Option<readonly unknown[]>;
-  };
-  const complete = (state: InitialState): Option.Option<UsageLimitStreams> =>
-    Option.isSome(state.providers) && Option.isSome(state.sources)
-      ? Option.some({
-          providers: state.providers.value,
-          sources: state.sources.value,
-        })
-      : Option.none();
+  const timeoutMs = input.timeoutMs ?? USAGE_LIMIT_TIMEOUT_MS;
 
-  const result = socketEvents({
-    url,
-    token: input.token,
-    webSocketConstructor: WebSocketClient,
-    pingIntervalMs: input.pingIntervalMs ?? 5_000,
+  const initialData = Effect.gen(function* () {
+    const client = yield* RpcClient.make(ServerConfigRpcs, {
+      disableTracing: true,
+    });
+    return yield* client
+      .subscribeServerConfig({
+        usageLimitSources: true,
+        workspaceSnapshotsOnDemand: true,
+      })
+      .pipe(
+        Stream.mapAccumEffect(
+          (): InitialState => ({
+            providers: Option.none(),
+            sources: Option.none(),
+          }),
+          projectEvent,
+        ),
+        Stream.runHead,
+      );
   }).pipe(
-    Stream.mapAccumEffect(
-      (): InitialState => ({
-        providers: Option.none(),
-        sources: Option.none(),
-      }),
-      (state, event) =>
-        Match.typeTags<SocketEvent>()({
-          Open: (event) =>
-            Effect.try({
-              try: () => {
-                event.socket.send(
-                  JSON.stringify({
-                    _tag: "Request",
-                    id: requestId,
-                    tag: "subscribeServerConfig",
-                    payload: {
-                      usageLimitSources: true,
-                      workspaceSnapshotsOnDemand: true,
-                    },
-                    headers: [],
-                  }),
-                );
-              },
-              catch: () => new RpcFailure({ message: RPC_MESSAGES.subscribe }),
-            }).pipe(Effect.as([state, []] as const)),
-          Message: (event) =>
-            Effect.gen(function* () {
-              const decoded = yield* decodeFrame(event.data);
-              const messages = Array.isArray(decoded) ? decoded : [decoded];
-              let next = state;
-              for (const rawMessage of messages) {
-                const message = yield* Effect.mapError(
-                  Schema.decodeUnknownEffect(ServerFrameSchema)(rawMessage),
-                  () => new RpcFailure({ message: RPC_MESSAGES.read }),
-                );
-
-                switch (message._tag) {
-                  case "Chunk": {
-                    if (message.requestId !== requestId) break;
-                    yield* Effect.try({
-                      try: () =>
-                        event.socket.send(
-                          JSON.stringify({ _tag: "Ack", requestId }),
-                        ),
-                      catch: () =>
-                        new RpcFailure({ message: RPC_MESSAGES.connection }),
-                    });
-                    if (!Array.isArray(message.values)) break;
-                    for (const value of message.values) {
-                      const header = Option.getOrUndefined(
-                        Schema.decodeUnknownOption(EventHeaderSchema)(value),
-                      );
-                      if (header?.type === "snapshot") {
-                        const snapshot = yield* Effect.mapError(
-                          Schema.decodeUnknownEffect(SnapshotEventSchema)(
-                            value,
-                          ),
-                          () =>
-                            new RpcFailure({ message: RPC_MESSAGES.snapshot }),
-                        );
-                        next = {
-                          ...next,
-                          providers: Option.some(snapshot.config.providers),
-                        };
-                      } else if (header?.type === "usageLimitSourcesUpdated") {
-                        const sourceEvent = yield* Effect.mapError(
-                          Schema.decodeUnknownEffect(SourcesEventSchema)(value),
-                          () =>
-                            new RpcFailure({ message: RPC_MESSAGES.sources }),
-                        );
-                        next = {
-                          ...next,
-                          sources: Option.some(sourceEvent.payload.sources),
-                        };
-                      }
-                      const initialData = complete(next);
-                      if (Option.isSome(initialData))
-                        return [next, [initialData.value]] as const;
-                    }
-                    break;
-                  }
-                  case "Exit":
-                    if (message.requestId === requestId)
-                      return yield* new RpcFailure({
-                        message: RPC_MESSAGES.ended,
-                      });
-                    break;
-                  case "Defect":
-                    return yield* new RpcFailure({
-                      message: RPC_MESSAGES.failed,
-                    });
-                  case "Pong":
-                  case "Ping":
-                    break;
-                  default:
-                    break;
-                }
-                const initialData = complete(next);
-                if (Option.isSome(initialData))
-                  return [next, [initialData.value]] as const;
-              }
-              return [next, []] as const;
-            }),
-          Error: () =>
-            Effect.fail(new RpcFailure({ message: RPC_MESSAGES.connect })),
-          Close: () =>
-            Effect.fail(new RpcFailure({ message: RPC_MESSAGES.closed })),
-          HeartbeatFailure: (event) => Effect.fail(event.failure),
-        })(event),
-    ),
-    Stream.runHead,
-    Effect.flatMap((response) =>
-      Option.match(response, {
+    Effect.scoped,
+    Effect.provide(protocolLayer(url, input.token, timeoutMs)),
+    // The RPC client logs unexpected transport causes, which may include
+    // server-provided text.
+    Effect.provideService(References.MinimumLogLevel, "None"),
+    redactCause,
+    Effect.flatMap(
+      Option.match({
         onNone: () =>
           Effect.fail(new RpcFailure({ message: RPC_MESSAGES.ended })),
         onSome: Effect.succeed,
@@ -409,8 +289,8 @@ export const readUsageLimitStreams = Effect.fnUntraced(function* (input: {
     ),
   );
 
-  return yield* Effect.timeoutOrElse(result, {
-    duration: input.timeoutMs ?? USAGE_LIMIT_TIMEOUT_MS,
+  return yield* Effect.timeoutOrElse(initialData, {
+    duration: timeoutMs,
     orElse: () =>
       Effect.fail(new RpcFailure({ message: RPC_MESSAGES.timeout })),
   });
