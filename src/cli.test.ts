@@ -97,6 +97,8 @@ describe("t3-limits CLI", () => {
     const dependencies = noIoDependencies({ fileReads, processSpawns });
     const invalidCases = [
       ["--unknown-secret-looking-option", "do-not-print-this"],
+      ["--help-for-agents"],
+      ["--help-agent", "--unknown"],
       ["unexpected-positional"],
       ["--home", "auth", "login"],
       ["--url", "auth", "logout"],
@@ -126,7 +128,7 @@ describe("t3-limits CLI", () => {
     expect(processSpawns.value).toBe(0);
   });
 
-  it("prints root help and agent help without dependency IO", async () => {
+  it("prints generated help and the agent guide without dependency IO", async () => {
     const guide = await Bun.file(
       fileURLToPath(new URL("../docs/guide.md", import.meta.url)),
     ).text();
@@ -138,12 +140,31 @@ describe("t3-limits CLI", () => {
     console.log = (...values: unknown[]) => helpOutputs.push(values.join(" "));
     try {
       await Effect.runPromise(runCli(["--help"], dependencies));
-      await Effect.runPromise(runCli(["--help-for-agents"], dependencies));
+      await Effect.runPromise(runCli(["-h"], dependencies));
+      await Effect.runPromise(runCli(["--help-agent"], dependencies));
     } finally {
       console.log = originalLog;
     }
 
-    expect(helpOutputs).toEqual([guide.trimEnd(), guide.trimEnd()]);
+    expect(helpOutputs).toHaveLength(3);
+    expect(helpOutputs[0]).toContain("USAGE:");
+    expect(helpOutputs[0]).toContain("OPTIONS:");
+    for (const option of [
+      "--json",
+      "--fixture",
+      "--url",
+      "--home",
+      "--token-file",
+      "--help-agent",
+    ]) {
+      expect(helpOutputs[0]).toContain(option);
+    }
+    expect(helpOutputs[0]).not.toContain("--help-for-agents");
+    expect(helpOutputs[0]).not.toContain("# t3-limits guide");
+    expect(helpOutputs[0]).not.toContain("Authentication");
+    expect(helpOutputs[0]).not.toContain("1Password");
+    expect(helpOutputs[1]).toBe(helpOutputs[0]);
+    expect(helpOutputs[2]).toBe(guide.trimEnd());
     expect(fileReads.value).toBe(0);
     expect(processSpawns.value).toBe(0);
   });
