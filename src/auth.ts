@@ -13,9 +13,19 @@ export const SESSION_ISSUE_TIMEOUT_MS = 15_000;
 const MAX_TOKEN_OUTPUT_BYTES = 4096;
 
 export interface SecretStore {
-  get(options: { readonly service: string; readonly name: string }): Promise<string | null>;
-  set(options: { readonly service: string; readonly name: string; readonly value: string }): Promise<void>;
-  delete(options: { readonly service: string; readonly name: string }): Promise<boolean>;
+  get(options: {
+    readonly service: string;
+    readonly name: string;
+  }): Promise<string | null>;
+  set(options: {
+    readonly service: string;
+    readonly name: string;
+    readonly value: string;
+  }): Promise<void>;
+  delete(options: {
+    readonly service: string;
+    readonly name: string;
+  }): Promise<boolean>;
 }
 
 export interface SessionIssueChild {
@@ -26,7 +36,11 @@ export interface SessionIssueChild {
 
 export type SessionSpawn = (
   command: readonly string[],
-  options: { readonly stdin: "ignore"; readonly stdout: "pipe"; readonly stderr: "ignore" },
+  options: {
+    readonly stdin: "ignore";
+    readonly stdout: "pipe";
+    readonly stderr: "ignore";
+  },
 ) => SessionIssueChild;
 
 export function readBearerToken(input: {
@@ -37,35 +51,44 @@ export function readBearerToken(input: {
   readonly readFile: (path: string) => Promise<string>;
   readonly onMissing?: (origin: string) => Effect.Effect<string, AppFailure>;
 }): Effect.Effect<string, AppFailure> {
-  return Effect.gen(function*() {
+  return Effect.gen(function* () {
     let token: string | null | undefined;
     if (input.tokenFile !== undefined) {
       const tokenFile = input.tokenFile;
       token = yield* Effect.tryPromise({
         try: () => input.readFile(tokenFile),
-        catch: () => new AuthFailure({ safeMessage: "The token file could not be read." }),
+        catch: () =>
+          new AuthFailure({ safeMessage: "The token file could not be read." }),
       });
     } else if (input.env.T3_LIMITS_TOKEN !== undefined) {
       token = input.env.T3_LIMITS_TOKEN;
       if (token.trim().length === 0) {
-        return yield* Effect.fail(new AuthFailure({ safeMessage: "T3_LIMITS_TOKEN is set but empty." }));
+        return yield* Effect.fail(
+          new AuthFailure({ safeMessage: "T3_LIMITS_TOKEN is set but empty." }),
+        );
       }
     } else {
       const name = yield* canonicalSecretOrigin(input.origin);
       token = yield* Effect.tryPromise({
         try: () => input.secrets.get({ service: TOKEN_SERVICE, name }),
-        catch: () => new AuthFailure({
-          safeMessage: "Could not access the OS secret store. Use T3_LIMITS_TOKEN or --token-file, or enable the Bun 1.3+ OS secret backend (Linux: libsecret).",
-        }),
+        catch: () =>
+          new AuthFailure({
+            safeMessage:
+              "Could not access the OS secret store. Use T3_LIMITS_TOKEN or --token-file, or enable the Bun 1.3+ OS secret backend (Linux: libsecret).",
+          }),
       });
-      if (token === null && input.onMissing !== undefined) token = yield* input.onMissing(input.origin);
+      if (token === null && input.onMissing !== undefined)
+        token = yield* input.onMissing(input.origin);
     }
 
     const trimmed = token?.trim();
     if (trimmed === undefined || trimmed.length === 0) {
-      return yield* Effect.fail(new AuthFailure({
-        safeMessage: "Authentication required: run `t3-limits auth login`, set T3_LIMITS_TOKEN, or pass --token-file <path>.",
-      }));
+      return yield* Effect.fail(
+        new AuthFailure({
+          safeMessage:
+            "Authentication required: run `t3-limits auth login`, set T3_LIMITS_TOKEN, or pass --token-file <path>.",
+        }),
+      );
     }
     return trimmed;
   });
@@ -80,17 +103,33 @@ export function issueScopedToken(input: {
   return Effect.callback<string, ProcessFailure>((resume) => {
     let child: SessionIssueChild;
     try {
-      child = input.spawn([
-        input.executable,
-        "auth", "session", "issue",
-        "--base-dir", input.baseDir,
-        "--scope", TOKEN_SCOPE,
-        "--ttl", TOKEN_TTL,
-        "--label", TOKEN_LABEL,
-        "--token-only",
-      ], { stdin: "ignore", stdout: "pipe", stderr: "ignore" });
+      child = input.spawn(
+        [
+          input.executable,
+          "auth",
+          "session",
+          "issue",
+          "--base-dir",
+          input.baseDir,
+          "--scope",
+          TOKEN_SCOPE,
+          "--ttl",
+          TOKEN_TTL,
+          "--label",
+          TOKEN_LABEL,
+          "--token-only",
+        ],
+        { stdin: "ignore", stdout: "pipe", stderr: "ignore" },
+      );
     } catch {
-      resume(Effect.fail(new ProcessFailure({ safeMessage: "Could not start the T3 CLI for scoped token issuance." })));
+      resume(
+        Effect.fail(
+          new ProcessFailure({
+            safeMessage:
+              "Could not start the T3 CLI for scoped token issuance.",
+          }),
+        ),
+      );
       return;
     }
 
@@ -114,15 +153,23 @@ export function issueScopedToken(input: {
       if (token === undefined) {
         kill();
         cancelOutput();
-        resume(Effect.fail(new ProcessFailure({
-          safeMessage: "T3 scoped token issuance failed or timed out; no token was stored.",
-        })));
+        resume(
+          Effect.fail(
+            new ProcessFailure({
+              safeMessage:
+                "T3 scoped token issuance failed or timed out; no token was stored.",
+            }),
+          ),
+        );
       } else {
         resume(Effect.succeed(token));
       }
     };
 
-    timer = setTimeout(() => finish(), input.timeoutMs ?? SESSION_ISSUE_TIMEOUT_MS);
+    timer = setTimeout(
+      () => finish(),
+      input.timeoutMs ?? SESSION_ISSUE_TIMEOUT_MS,
+    );
     void (async () => {
       try {
         const chunks: Uint8Array[] = [];
@@ -144,8 +191,11 @@ export function issueScopedToken(input: {
           bytes.set(chunk, offset);
           offset += chunk.byteLength;
         }
-        const token = new TextDecoder("utf-8", { fatal: true }).decode(bytes).trim();
-        if (token.length === 0 || /\s|[\u0000-\u001f\u007f]/u.test(token)) return finish();
+        const token = new TextDecoder("utf-8", { fatal: true })
+          .decode(bytes)
+          .trim();
+        if (token.length === 0 || /\s|[\u0000-\u001f\u007f]/u.test(token))
+          return finish();
         finish(token);
       } catch {
         finish();
@@ -168,15 +218,21 @@ export function issueAndStoreScopedToken(input: {
   readonly baseDir: string;
   readonly secrets: SecretStore;
   readonly spawn: SessionSpawn;
-}): Effect.Effect<string, AuthFailure | ProcessFailure | import("./errors.ts").RpcFailure> {
-  return Effect.gen(function*() {
+}): Effect.Effect<
+  string,
+  AuthFailure | ProcessFailure | import("./errors.ts").RpcFailure
+> {
+  return Effect.gen(function* () {
     const token = yield* issueScopedToken(input);
     const name = yield* canonicalSecretOrigin(input.origin);
     yield* Effect.tryPromise({
-      try: () => input.secrets.set({ service: TOKEN_SERVICE, name, value: token }),
-      catch: () => new AuthFailure({
-        safeMessage: "Could not store the scoped token in the OS secret store. Ensure Bun 1.3+ and an available OS keychain (Linux: libsecret).",
-      }),
+      try: () =>
+        input.secrets.set({ service: TOKEN_SERVICE, name, value: token }),
+      catch: () =>
+        new AuthFailure({
+          safeMessage:
+            "Could not store the scoped token in the OS secret store. Ensure Bun 1.3+ and an available OS keychain (Linux: libsecret).",
+        }),
     });
     return token;
   });

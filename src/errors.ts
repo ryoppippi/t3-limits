@@ -40,7 +40,8 @@ export class CliFailure extends Data.TaggedError("CliFailure")<{
   }
 }
 
-export type AppFailure = InputFailure | AuthFailure | ProcessFailure | RpcFailure | CliFailure;
+export type AppFailure =
+  InputFailure | AuthFailure | ProcessFailure | RpcFailure | CliFailure;
 
 export function safeFailureMessage(failure: AppFailure): string {
   switch (failure._tag) {

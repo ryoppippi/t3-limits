@@ -19,10 +19,11 @@
     let
       systems = [ "aarch64-darwin" "aarch64-linux" "x86_64-linux" ];
       eachSystem = nixpkgs.lib.genAttrs systems;
-    in {
-      packages = eachSystem (system:
+      perSystem = system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
+          bun = nix-bun.packages.${system}.bun;
+          bun2nixPackage = bun2nix.packages.${system}.default;
           t3Source = llm-agents.packages.${system}.t3code.src;
           contractSources = pkgs.runCommand "t3-contract-sources" {} ''
             mkdir -p "$out"
@@ -37,16 +38,63 @@
             cp "${t3Source}/LICENSE" "$out/LICENSE"
           '';
           cli = pkgs.callPackage ./package.nix {
-            bun = nix-bun.packages.${system}.bun;
-            bun2nix = bun2nix.packages.${system}.default;
+            inherit bun;
+            bun2nix = bun2nixPackage;
             t3Contracts = contractSources;
             supportedSystems = systems;
           };
+          bunFormatCheck = pkgs.runCommand "t3-limits-bun-format-check" {
+            nativeBuildInputs = [ bun ];
+            src = pkgs.lib.fileset.toSource {
+              root = ./.;
+              fileset = pkgs.lib.fileset.unions [
+                ./.github/workflows/bun-ci.yaml
+                ./README.md
+                ./bunfig.toml
+                ./docs
+                ./package.json
+                ./scripts
+                ./src
+                ./tsconfig.json
+              ];
+            };
+          } ''
+            cd "$src"
+            bun --no-env-file run fmt:check
+            touch "$out"
+          '';
+          bunNixCheck = pkgs.runCommand "t3-limits-bun-nix-check" {
+            nativeBuildInputs = [ bun2nixPackage ];
+            src = pkgs.lib.fileset.toSource {
+              root = ./.;
+              fileset = pkgs.lib.fileset.unions [
+                ./bun.lock
+                ./package.json
+                ./nix/bun.nix
+              ];
+            };
+          } ''
+            cd "$src"
+            bun2nix -o "$TMPDIR/generated-bun.nix"
+            diff -u nix/bun.nix "$TMPDIR/generated-bun.nix"
+            touch "$out"
+          '';
         in {
-          default = cli;
-          t3-limits = cli;
-          bun2nix = bun2nix.packages.${system}.default;
-          contract-sources = contractSources;
-        });
+          packages = {
+            default = cli;
+            t3-limits = cli;
+            bun = bun;
+            bun2nix = bun2nixPackage;
+            contract-sources = contractSources;
+          };
+          checks = {
+            package = cli;
+            bun-format = bunFormatCheck;
+            bun-nix = bunNixCheck;
+          };
+        };
+    in {
+      packages = eachSystem (system: (perSystem system).packages);
+      checks = eachSystem (system: (perSystem system).checks);
     };
 }

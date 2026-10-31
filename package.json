@@ -7,6 +7,9 @@
   "scripts": {
     "start": "bun --no-env-file run src/cli.ts",
     "contracts:prepare": "bun --no-env-file scripts/prepare-contracts.ts",
+    "fmt": "bun --no-env-file --no-script fmt src scripts package.json tsconfig.json README.md docs/guide.md .github/workflows/bun-ci.yaml",
+    "fmt:check": "bun --no-env-file --no-script fmt --check src scripts package.json tsconfig.json README.md docs/guide.md .github/workflows/bun-ci.yaml",
+    "check": "bun --no-env-file --no-script check",
     "test": "bun --no-env-file test",
     "generate:nix": "nix run .#bun2nix -- -o nix/bun.nix"
   },
