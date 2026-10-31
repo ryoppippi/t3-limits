@@ -76,9 +76,10 @@ Run the Nix wrapper through `op run`:
 BUN_OPTIONS=--no-env-file op run --env-file=./t3-limits.env -- gh-nix nix run github:ryoppippi/t3-limits -- --json
 ```
 
-The Nix wrapper disables implicit dotenv loading. For source execution, always
-pass `--no-env-file` to the outer Bun command too: Bun otherwise loads dotenv
-before launching a package script, which would pass those values to its child.
-`BUN_OPTIONS=--no-env-file` applies the same setting to the 1Password example.
+The compiled executable disables implicit dotenv loading. The project's
+`bunfig.toml` also sets `env = false` for normal Bun commands. Keep
+`--no-env-file` on source commands so the setting holds even when the project
+configuration is not discovered. `BUN_OPTIONS=--no-env-file` applies the same
+setting to the 1Password example.
 Use process environment injection through `op run` rather than a mounted
 dotenv file.
