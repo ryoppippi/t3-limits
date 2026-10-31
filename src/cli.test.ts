@@ -29,7 +29,7 @@ describe("t3-limits CLI", () => {
     process.env.T3_LIMITS_TOKEN = "";
     try {
       await expect(runCli(["--url", "http://127.0.0.1:8318"])).rejects.toThrow(
-        "Authentication required: set T3_LIMITS_TOKEN or pass --token-file <path>.",
+        "T3_LIMITS_TOKEN is set but empty.",
       );
     } finally {
       if (originalToken === undefined) delete process.env.T3_LIMITS_TOKEN;
