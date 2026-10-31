@@ -1,16 +1,26 @@
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
+import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 
 import {
-  canonicalSecretOrigin,
   issueAndStoreScopedToken,
   readBearerToken,
   TOKEN_SERVICE,
   type SecretStore,
   type SessionSpawn,
 } from "./auth.ts";
+import {
+  AuthFailure,
+  CliFailure,
+  InputFailure,
+  ProcessFailure,
+  RpcFailure,
+  safeFailureMessage,
+  type AppFailure,
+} from "./errors.ts";
 import { projectUsageLimits, type UsageLimitReport, type UsageLimitRow } from "./limits.ts";
-import { readUsageLimitStreams, webSocketUrl } from "./rpc.ts";
+import { canonicalSecretOrigin, readUsageLimitStreams, webSocketUrl } from "./rpc.ts";
 
 interface CliOptions {
   readonly help: boolean;
@@ -21,8 +31,8 @@ interface CliOptions {
   readonly tokenFile?: string;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+function failure(message: string): never {
+  throw new CliFailure({ safeMessage: message });
 }
 
 function parseArgs(args: readonly string[]): CliOptions {
@@ -35,9 +45,7 @@ function parseArgs(args: readonly string[]): CliOptions {
 
   const takeValue = (flag: string, index: number): string => {
     const value = args[index + 1];
-    if (value === undefined || value.startsWith("--")) {
-      throw new Error(`Expected a value after ${flag}.`);
-    }
+    if (value === undefined || value.startsWith("--")) failure(`Expected a value after ${flag}.`);
     return value;
   };
 
@@ -52,32 +60,32 @@ function parseArgs(args: readonly string[]): CliOptions {
         json = true;
         break;
       case "--fixture":
-        if (fixture !== undefined) throw new Error("--fixture can only be used once.");
+        if (fixture !== undefined) failure("--fixture can only be used once.");
         fixture = takeValue(argument, index);
         index += 1;
         break;
       case "--home":
-        if (home !== undefined) throw new Error("--home can only be used once.");
+        if (home !== undefined) failure("--home can only be used once.");
         home = takeValue(argument, index);
         index += 1;
         break;
       case "--url":
-        if (origin !== undefined) throw new Error("--url can only be used once.");
+        if (origin !== undefined) failure("--url can only be used once.");
         origin = takeValue(argument, index);
         index += 1;
         break;
       case "--token-file":
-        if (tokenFile !== undefined) throw new Error("--token-file can only be used once.");
+        if (tokenFile !== undefined) failure("--token-file can only be used once.");
         tokenFile = takeValue(argument, index);
         index += 1;
         break;
       default:
-        throw new Error("Unknown option. Run --help to see the supported flags.");
+        failure("Unknown option. Run --help to see the supported flags.");
     }
   }
 
   if (fixture !== undefined && (home !== undefined || origin !== undefined || tokenFile !== undefined)) {
-    throw new Error("--fixture cannot be combined with connection options.");
+    failure("--fixture cannot be combined with connection options.");
   }
   return {
     help,
@@ -89,30 +97,50 @@ function parseArgs(args: readonly string[]): CliOptions {
   };
 }
 
-async function readJsonFile(path: string, failure: string): Promise<unknown> {
-  try {
-    return JSON.parse(await Bun.file(path).text()) as unknown;
-  } catch {
-    throw new Error(failure);
-  }
-}
-
-async function fixtureReport(path: string): Promise<UsageLimitReport> {
-  const fixture = await readJsonFile(path, "Could not read the usage-limits fixture.");
-  if (!isRecord(fixture)) throw new Error("The usage-limits fixture must be a JSON object.");
-  return projectUsageLimits({
-    providers: fixture.providers,
-    sources: fixture.sources,
+function parseWithSafeFailure<A>(parse: () => A): Effect.Effect<A, CliFailure> {
+  return Effect.try({
+    try: parse,
+    catch: (error) => error instanceof CliFailure
+      ? error
+      : new CliFailure({ safeMessage: "Invalid command-line arguments." }),
   });
 }
 
-async function runtimeOrigin(home: string | undefined): Promise<string> {
+function readJsonFile(path: string, safeMessage: string): Effect.Effect<unknown, InputFailure> {
+  return Effect.tryPromise({
+    try: async () => JSON.parse(await Bun.file(path).text()) as unknown,
+    catch: () => new InputFailure({ safeMessage }),
+  });
+}
+
+const FixtureSchema = Schema.Struct({
+  providers: Schema.optional(Schema.Unknown),
+  sources: Schema.optional(Schema.Unknown),
+});
+
+function fixtureReport(path: string): Effect.Effect<UsageLimitReport, InputFailure> {
+  return Effect.gen(function*() {
+    const fixture = yield* readJsonFile(path, "Could not read the usage-limits fixture.");
+    const decoded = yield* Effect.mapError(
+      Schema.decodeUnknownEffect(FixtureSchema)(fixture),
+      () => new InputFailure({ safeMessage: "The usage-limits fixture must be a JSON object." }),
+    );
+    return yield* projectUsageLimits({ providers: decoded.providers, sources: decoded.sources });
+  });
+}
+
+const RuntimeStateSchema = Schema.Struct({ origin: Schema.String });
+
+function runtimeOrigin(home: string | undefined): Effect.Effect<string, InputFailure> {
   const statePath = join(home ?? homedir(), ".t3", "userdata", "server-runtime.json");
-  const runtime = await readJsonFile(statePath, "T3 server runtime state could not be read.");
-  if (!isRecord(runtime) || typeof runtime.origin !== "string") {
-    throw new Error("T3 server runtime state does not contain a valid origin.");
-  }
-  return runtime.origin;
+  return Effect.gen(function*() {
+    const runtime = yield* readJsonFile(statePath, "T3 server runtime state could not be read.");
+    const decoded = yield* Effect.mapError(
+      Schema.decodeUnknownEffect(RuntimeStateSchema)(runtime),
+      () => new InputFailure({ safeMessage: "T3 server runtime state does not contain a valid origin." }),
+    );
+    return decoded.origin;
+  });
 }
 
 interface CliDependencies {
@@ -130,44 +158,53 @@ const defaultDependencies: CliDependencies = {
   spawn: (command, options) => Bun.spawn([...command], options),
 };
 
-function configuredT3Executable(value: string | undefined): string {
-  if (value === undefined) return "t3";
+function configuredT3Executable(value: string | undefined): Effect.Effect<string, CliFailure> {
+  if (value === undefined) return Effect.succeed("t3");
   if (!isAbsolute(value)) {
-    throw new Error("T3CODE_CLI_PATH must be a non-empty absolute executable path.");
+    return Effect.fail(new CliFailure({ safeMessage: "T3CODE_CLI_PATH must be a non-empty absolute executable path." }));
   }
-  return value;
+  return Effect.succeed(value);
 }
 
-async function liveReport(options: CliOptions, dependencies: CliDependencies): Promise<UsageLimitReport> {
-  const origin = options.origin ?? await runtimeOrigin(options.home);
-  webSocketUrl(origin, true);
-  const token = await readBearerToken({
-    origin,
-    tokenFile: options.tokenFile,
-    env: dependencies.env,
-    secrets: dependencies.secrets,
-    readFile: dependencies.readFile,
-    onMissing: async (missingOrigin) => {
-      if (options.origin !== undefined) {
-        const discoveredOrigin = await runtimeOrigin(options.home);
-        if (canonicalSecretOrigin(missingOrigin) !== canonicalSecretOrigin(discoveredOrigin)) {
-          throw new Error("The --url override does not match the runtime server. Provide T3_LIMITS_TOKEN or --token-file to use this URL without automatic token setup.");
+function liveReport(options: CliOptions, dependencies: CliDependencies): Effect.Effect<UsageLimitReport, AppFailure> {
+  return Effect.gen(function*() {
+    const origin = options.origin ?? (yield* runtimeOrigin(options.home));
+    yield* webSocketUrl(origin, true);
+    const token = yield* readBearerToken({
+      origin,
+      tokenFile: options.tokenFile,
+      env: dependencies.env,
+      secrets: dependencies.secrets,
+      readFile: dependencies.readFile,
+      onMissing: (missingOrigin) => Effect.gen(function*() {
+        if (options.origin !== undefined) {
+          const discoveredOrigin = yield* runtimeOrigin(options.home);
+          const missingName = yield* canonicalSecretOrigin(missingOrigin);
+          const discoveredName = yield* canonicalSecretOrigin(discoveredOrigin);
+          if (missingName !== discoveredName) {
+            return yield* Effect.fail(new AuthFailure({
+              safeMessage: "The --url override does not match the runtime server. Provide T3_LIMITS_TOKEN or --token-file to use this URL without automatic token setup.",
+            }));
+          }
         }
-      }
-      const executable = configuredT3Executable(dependencies.env.T3CODE_CLI_PATH);
-      return issueAndStoreScopedToken({
-        origin: missingOrigin,
-        executable,
-        baseDir: join(options.home ?? homedir(), ".t3"),
-        secrets: dependencies.secrets,
-        spawn: dependencies.spawn,
-      });
-    },
+        const executable = yield* configuredT3Executable(dependencies.env.T3CODE_CLI_PATH);
+        return yield* issueAndStoreScopedToken({
+          origin: missingOrigin,
+          executable,
+          baseDir: join(options.home ?? homedir(), ".t3"),
+          secrets: dependencies.secrets,
+          spawn: dependencies.spawn,
+        });
+      }),
+    });
+    const data = yield* Effect.mapError(
+      (dependencies.readUsageLimits ?? readUsageLimitStreams)({ origin, token }),
+      () => new RpcFailure({
+        safeMessage: "Could not retrieve T3 usage limits. Check the server connection and credential; run `t3-limits auth login` to replace an expired stored token, or replace the supplied token.",
+      }),
+    );
+    return yield* projectUsageLimits(data);
   });
-  const data = await (dependencies.readUsageLimits ?? readUsageLimitStreams)({ origin, token }).catch(() => {
-    throw new Error("Could not retrieve T3 usage limits. Check the server connection and credential; run `t3-limits auth login` to replace an expired stored token, or replace the supplied token.");
-  });
-  return projectUsageLimits(data);
 }
 
 function cleanText(value: string): string {
@@ -191,18 +228,20 @@ function formatRow(row: UsageLimitRow): string[] {
   return lines;
 }
 
-function printReport(report: UsageLimitReport, json: boolean): void {
-  if (json) {
-    console.log(JSON.stringify(report, null, 2));
-    return;
-  }
+function printReport(report: UsageLimitReport, json: boolean): Effect.Effect<void> {
+  return Effect.sync(() => {
+    if (json) {
+      console.log(JSON.stringify(report, null, 2));
+      return;
+    }
 
-  console.log(`Usage limits retrieved at ${report.retrievedAt}`);
-  if (report.providers.length === 0) console.log("No provider usage limits were reported.");
-  for (const row of report.providers) {
-    for (const line of formatRow(row)) console.log(line);
-  }
-  for (const notice of report.notices) console.log(`Notice: ${cleanText(notice)}`);
+    console.log(`Usage limits retrieved at ${report.retrievedAt}`);
+    if (report.providers.length === 0) console.log("No provider usage limits were reported.");
+    for (const row of report.providers) {
+      for (const line of formatRow(row)) console.log(line);
+    }
+    for (const notice of report.notices) console.log(`Notice: ${cleanText(notice)}`);
+  });
 }
 
 const HELP = `t3-limits — read usage limits from a running T3 Code server
@@ -242,82 +281,99 @@ function parseAuthArgs(args: readonly string[]): AuthOptions | "help" {
   const command = args[0];
   if (args.length === 2 && (command === "login" || command === "logout") && (args[1] === "--help" || args[1] === "-h")) return "help";
   if (args.length === 1 && (command === "--help" || command === "-h")) return "help";
-  if (command !== "login" && command !== "logout") throw new Error("Expected `auth login` or `auth logout`.");
+  if (command !== "login" && command !== "logout") failure("Expected `auth login` or `auth logout`.");
   let home: string | undefined;
   let origin: string | undefined;
   let t3Bin: string | undefined;
   for (let index = 1; index < args.length; index += 1) {
     const flag = args[index];
     const value = args[index + 1];
-    if (value === undefined || value.startsWith("--")) throw new Error("Expected an option value.");
+    if (value === undefined || value.startsWith("--")) failure("Expected an option value.");
     if (flag === "--home") {
-      if (home !== undefined) throw new Error("--home can only be used once.");
+      if (home !== undefined) failure("--home can only be used once.");
       home = value;
     } else if (flag === "--url") {
-      if (origin !== undefined) throw new Error("--url can only be used once.");
+      if (origin !== undefined) failure("--url can only be used once.");
       origin = value;
     } else if (flag === "--t3-bin") {
-      if (t3Bin !== undefined) throw new Error("--t3-bin can only be used once.");
+      if (t3Bin !== undefined) failure("--t3-bin can only be used once.");
       t3Bin = value;
     } else {
-      throw new Error("Unknown auth option. Run `t3-limits auth --help` to see supported options.");
+      failure("Unknown auth option. Run `t3-limits auth --help` to see supported options.");
     }
     index += 1;
   }
-  if (home !== undefined && origin !== undefined) throw new Error("Use either --home or --url, not both.");
-  if (command === "login" && origin !== undefined) throw new Error("auth login discovers the server origin from runtime state; --url is not supported.");
-  if (command === "logout" && t3Bin !== undefined) throw new Error("--t3-bin is only supported by auth login.");
+  if (home !== undefined && origin !== undefined) failure("Use either --home or --url, not both.");
+  if (command === "login" && origin !== undefined) failure("auth login discovers the server origin from runtime state; --url is not supported.");
+  if (command === "logout" && t3Bin !== undefined) failure("--t3-bin is only supported by auth login.");
   return { command, ...(home === undefined ? {} : { home }), ...(origin === undefined ? {} : { origin }), ...(t3Bin === undefined ? {} : { t3Bin }) };
 }
 
-async function runAuth(args: readonly string[], dependencies: CliDependencies): Promise<void> {
-  const options = parseAuthArgs(args);
-  if (options === "help") {
-    console.log(AUTH_HELP);
-    return;
-  }
-  const origin = options.origin ?? await runtimeOrigin(options.home);
-  const name = canonicalSecretOrigin(origin);
-  const secretKey = { service: TOKEN_SERVICE, name };
-  if (options.command === "logout") {
-    try {
-      await dependencies.secrets.delete(secretKey);
-    } catch {
-      throw new Error("Could not access the OS secret store to remove the local token. Ensure Bun 1.3+ and an available OS keychain (Linux: libsecret).");
+function runAuth(args: readonly string[], dependencies: CliDependencies): Effect.Effect<void, AppFailure> {
+  return Effect.gen(function*() {
+    const options = yield* parseWithSafeFailure(() => parseAuthArgs(args));
+    if (options === "help") {
+      yield* Effect.sync(() => console.log(AUTH_HELP));
+      return;
     }
-    console.log("Local token removed if present. Any issued server token remains valid until expiry.");
-    return;
-  }
+    const origin = options.origin ?? (yield* runtimeOrigin(options.home));
+    const name = yield* canonicalSecretOrigin(origin);
+    const secretKey = { service: TOKEN_SERVICE, name };
+    if (options.command === "logout") {
+      yield* Effect.tryPromise({
+        try: () => dependencies.secrets.delete(secretKey),
+        catch: () => new AuthFailure({
+          safeMessage: "Could not access the OS secret store to remove the local token. Ensure Bun 1.3+ and an available OS keychain (Linux: libsecret).",
+        }),
+      });
+      yield* Effect.sync(() => console.log("Local token removed if present. Any issued server token remains valid until expiry."));
+      return;
+    }
 
-  const executable = options.t3Bin ?? configuredT3Executable(dependencies.env.T3CODE_CLI_PATH);
-  if (executable.trim().length === 0) throw new Error("T3CODE_CLI_PATH or --t3-bin must name the installed T3 CLI executable.");
-  const baseDir = join(options.home ?? homedir(), ".t3");
-  await issueAndStoreScopedToken({ origin, executable, baseDir, secrets: dependencies.secrets, spawn: dependencies.spawn });
-  console.log(`Scoped token stored for ${name}; it expires in one hour.`);
+    const executable = options.t3Bin === undefined
+      ? yield* configuredT3Executable(dependencies.env.T3CODE_CLI_PATH)
+      : options.t3Bin;
+    if (executable.trim().length === 0) {
+      return yield* Effect.fail(new CliFailure({ safeMessage: "T3CODE_CLI_PATH or --t3-bin must name the installed T3 CLI executable." }));
+    }
+    const baseDir = join(options.home ?? homedir(), ".t3");
+    yield* issueAndStoreScopedToken({ origin, executable, baseDir, secrets: dependencies.secrets, spawn: dependencies.spawn });
+    yield* Effect.sync(() => console.log(`Scoped token stored for ${name}; it expires in one hour.`));
+  });
 }
 
-export async function runCli(args: readonly string[], dependencies: CliDependencies = defaultDependencies): Promise<void> {
-  if (args[0] === "auth") {
-    await runAuth(args.slice(1), dependencies);
-    return;
-  }
-  const options = parseArgs(args);
-  if (options.help) {
-    console.log(HELP);
-    return;
-  }
-  const report = options.fixture === undefined
-    ? await liveReport(options, dependencies)
-    : await fixtureReport(options.fixture);
-  printReport(report, options.json);
+export function runCli(args: readonly string[], dependencies: CliDependencies = defaultDependencies): Effect.Effect<void, AppFailure> {
+  return Effect.gen(function*() {
+    if (args[0] === "auth") {
+      yield* runAuth(args.slice(1), dependencies);
+      return;
+    }
+    const options = yield* parseWithSafeFailure(() => parseArgs(args));
+    if (options.help) {
+      yield* Effect.sync(() => console.log(HELP));
+      return;
+    }
+    const report = options.fixture === undefined
+      ? yield* liveReport(options, dependencies)
+      : yield* fixtureReport(options.fixture);
+    yield* printReport(report, options.json);
+  });
 }
 
 if (import.meta.main) {
-  try {
-    await runCli(Bun.argv.slice(2));
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "The command failed.";
-    console.error(`Error: ${message}`);
+  const reportFailure = (failure: AppFailure) => Effect.sync(() => {
+    console.error(`Error: ${safeFailureMessage(failure)}`);
     process.exitCode = 1;
-  }
+  });
+  const program = Effect.catchTags(runCli(Bun.argv.slice(2)), {
+    InputFailure: reportFailure,
+    AuthFailure: reportFailure,
+    ProcessFailure: reportFailure,
+    RpcFailure: reportFailure,
+    CliFailure: reportFailure,
+  });
+  await Effect.runPromise(Effect.catchDefect(program, () => Effect.sync(() => {
+    console.error("Error: The command failed unexpectedly.");
+    process.exitCode = 1;
+  })));
 }

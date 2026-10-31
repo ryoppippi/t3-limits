@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import * as Effect from "effect/Effect";
 
 import {
   readUsageLimitStreams,
@@ -131,13 +132,13 @@ describe("T3 usage-limit WebSocket protocol", () => {
       }
     }, sockets);
 
-    const response = await readUsageLimitStreams({
+    const response = await Effect.runPromise(readUsageLimitStreams({
       origin: "http://127.0.0.1:8318",
       token: "test-token",
       timeoutMs: 1_000,
       pingIntervalMs: 10,
       webSocketConstructor,
-    });
+    }));
     await twoAcks;
 
     expect(response.providers).toEqual([{ instanceId: "claude", driver: "claude" }]);
@@ -163,6 +164,7 @@ describe("T3 usage-limit WebSocket protocol", () => {
   it("decodes a batched server frame and sanitises an RPC failure", async () => {
     const sockets: MockWebSocket[] = [];
     const webSocketConstructor = mockConstructor((socket, frame) => {
+      if (!isRecord(frame)) return;
       if (frame._tag !== "Request" || (typeof frame.id !== "string" && typeof frame.id !== "number")) return;
       socket.serverMessage([
         {
@@ -178,16 +180,17 @@ describe("T3 usage-limit WebSocket protocol", () => {
       ]);
     }, sockets);
 
-    const response = await readUsageLimitStreams({
+    const response = await Effect.runPromise(readUsageLimitStreams({
       origin: "http://127.0.0.1:8318",
       token: "test-token",
       timeoutMs: 100,
       webSocketConstructor,
-    });
+    }));
     expect(response).toEqual({ providers: [], sources: [] });
     expect(sockets[0]?.sent.filter((frame) => frame._tag === "Ack")).toHaveLength(2);
 
     const failedConstructor = mockConstructor((socket, frame) => {
+      if (!isRecord(frame)) return;
       if (frame._tag === "Request" && (typeof frame.id === "string" || typeof frame.id === "number")) {
         socket.serverMessage({
           _tag: "Exit",
@@ -199,43 +202,45 @@ describe("T3 usage-limit WebSocket protocol", () => {
         });
       }
     }, []);
-    const failure = readUsageLimitStreams({
+    const failure = Effect.runPromise(readUsageLimitStreams({
       origin: "http://127.0.0.1:8318",
       token: "test-token",
       timeoutMs: 100,
       webSocketConstructor: failedConstructor,
-    });
+    }));
     await expect(failure).rejects.toThrow("subscription ended before the initial data arrived");
     const error = await failure.catch((reason: unknown) => reason);
+    expect(error).toMatchObject({ _tag: "RpcFailure" });
     expect(String(error)).not.toContain("do-not-print");
 
     const malformedConstructor = mockConstructor((socket, frame) => {
+      if (!isRecord(frame)) return;
       if (frame._tag === "Request") socket.serverRawMessage("not-valid-json token=do-not-print");
     }, []);
-    const malformed = readUsageLimitStreams({
+    const malformed = Effect.runPromise(readUsageLimitStreams({
       origin: "http://127.0.0.1:8318",
       token: "test-token",
       timeoutMs: 100,
       webSocketConstructor: malformedConstructor,
-    });
+    }));
     await expect(malformed).rejects.toThrow("Could not read the T3 usage-limit stream.");
     const malformedError = await malformed.catch((reason: unknown) => reason);
     expect(String(malformedError)).not.toContain("do-not-print");
   });
 
   it("rejects remote and credential-bearing origins and bounds waiting for initial sources", async () => {
-    expect(() => webSocketUrl("https://example.com")).toThrow("loopback address");
-    expect(() => webSocketUrl("http://user:pass@127.0.0.1:8318")).toThrow("without credentials");
-    expect(() => webSocketUrl("http://127.0.0.1:8318/path")).toThrow("without credentials");
+    expect(() => Effect.runSync(webSocketUrl("https://example.com"))).toThrow("loopback address");
+    expect(() => Effect.runSync(webSocketUrl("http://user:pass@127.0.0.1:8318"))).toThrow("without credentials");
+    expect(() => Effect.runSync(webSocketUrl("http://127.0.0.1:8318/path"))).toThrow("without credentials");
 
     const sockets: MockWebSocket[] = [];
     const webSocketConstructor = mockConstructor(() => undefined, sockets);
-    await expect(readUsageLimitStreams({
+    await expect(Effect.runPromise(readUsageLimitStreams({
       origin: "http://127.0.0.1:8318",
       token: "test-token",
       timeoutMs: 20,
       pingIntervalMs: 1_000,
       webSocketConstructor,
-    })).rejects.toThrow("Timed out waiting for T3 usage limits.");
+    }))).rejects.toThrow("Timed out waiting for T3 usage limits.");
   });
 });

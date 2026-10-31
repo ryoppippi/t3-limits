@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import * as Effect from "effect/Effect";
 import { fileURLToPath } from "node:url";
 
 import { runCli } from "./cli.ts";
@@ -10,7 +11,7 @@ describe("t3-limits CLI", () => {
     console.log = (...values: unknown[]) => output.push(values.join(" "));
     try {
       const fixturePath = fileURLToPath(new URL("../fixtures/usage-limits.json", import.meta.url));
-      await runCli(["--fixture", fixturePath, "--json"]);
+      await Effect.runPromise(runCli(["--fixture", fixturePath, "--json"]));
     } finally {
       console.log = originalLog;
     }
@@ -28,7 +29,7 @@ describe("t3-limits CLI", () => {
     const originalToken = process.env.T3_LIMITS_TOKEN;
     process.env.T3_LIMITS_TOKEN = "";
     try {
-      await expect(runCli(["--url", "http://127.0.0.1:8318"])).rejects.toThrow(
+      await expect(Effect.runPromise(runCli(["--url", "http://127.0.0.1:8318"]))).rejects.toThrow(
         "T3_LIMITS_TOKEN is set but empty.",
       );
     } finally {

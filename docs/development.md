@@ -6,6 +6,11 @@ Run the test suite with Bun:
 bun --no-env-file run test
 ```
 
+The runtime uses Effect for CLI, authentication, process, and RPC failure
+channels. Effect Schema decodes incoming boundaries, while report projection
+copies only its explicit output fields. Run Bun's strict type checker with
+`bun --no-env-file check`.
+
 The Nix flake packages the TypeScript source and production dependencies for
 offline runtime resolution. It supports `aarch64-darwin`, `aarch64-linux`, and
 `x86_64-linux`.

@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import * as Effect from "effect/Effect";
 import { readUsageLimitStreams } from "./rpc.ts";
 
 test("uses Bun's real WebSocket transport with a bearer header", async () => {
@@ -29,11 +30,11 @@ test("uses Bun's real WebSocket transport with a bearer header", async () => {
     },
   });
   try {
-    expect(await readUsageLimitStreams({
+    expect(await Effect.runPromise(readUsageLimitStreams({
       origin: `http://127.0.0.1:${server.port}`,
       token: "synthetic-test-token",
       timeoutMs: 1_000,
-    })).toEqual({ providers: [], sources: [] });
+    }))).toEqual({ providers: [], sources: [] });
     expect(authorised).toBe(true);
     expect(methods).toEqual(["subscribeServerConfig"]);
   } finally {

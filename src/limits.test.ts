@@ -1,15 +1,16 @@
 import { describe, expect, it } from "bun:test";
+import * as Effect from "effect/Effect";
 
 import fixture from "../fixtures/usage-limits.json" with { type: "json" };
 import { projectUsageLimits } from "./limits.ts";
 
 describe("projectUsageLimits", () => {
   it("projects native and source accounts onto allowlisted fields with honest timestamps", () => {
-    const report = projectUsageLimits({
+    const report = Effect.runSync(projectUsageLimits({
       providers: fixture.providers,
       sources: fixture.sources,
       retrievedAt: "2026-10-31T12:00:00.000Z",
-    });
+    }));
 
     expect(report.retrievedAt).toBe("2026-10-31T12:00:00.000Z");
     expect(report.providers).toHaveLength(3);
@@ -71,7 +72,7 @@ describe("projectUsageLimits", () => {
   });
 
   it("marks unsupported and malformed snapshots without presenting malformed windows", () => {
-    const report = projectUsageLimits({
+    const report = Effect.runSync(projectUsageLimits({
       providers: [
         {
           instanceId: "unsupported",
@@ -94,16 +95,64 @@ describe("projectUsageLimits", () => {
       ],
       sources: [],
       retrievedAt: "2026-10-31T12:00:00.000Z",
-    });
+    }));
 
     expect(report.providers[0]).toMatchObject({ unavailable: true, reason: "unsupported" });
     expect(report.providers[1]).toMatchObject({ unavailable: true, reason: "invalidSnapshot", windows: [] });
     expect(JSON.stringify(report)).not.toContain("private provider detail");
   });
 
+  it("retains last good bars after a failed probe and omits unknown fields", () => {
+    const report = Effect.runSync(projectUsageLimits({
+      providers: [{
+        instanceId: "provider-one",
+        driver: "claude",
+        privateConfig: { token: "unknown-config-secret" },
+        usageLimits: {
+          checkedAt: "2026-10-31T11:00:00.000Z",
+          unavailable: { reason: "probeFailed", message: "private provider failure" },
+          windows: [{
+            id: "session",
+            kind: "session",
+            label: "Session",
+            usedPercent: 42,
+            providerPrivateField: "unknown-window-secret",
+          }],
+        },
+      }],
+      sources: [],
+      retrievedAt: "2026-10-31T12:00:00.000Z",
+    }));
+
+    expect(report.providers[0]).toMatchObject({
+      unavailable: true,
+      reason: "probeFailed",
+      windows: [{ id: "session", usedPercent: 42, remainingPercent: 58 }],
+    });
+    const serialized = JSON.stringify(report);
+    expect(serialized).not.toContain("unknown-config-secret");
+    expect(serialized).not.toContain("unknown-window-secret");
+    expect(serialized).not.toContain("private provider failure");
+  });
+
   it("rejects malformed fixture roots instead of returning an empty report", () => {
-    expect(() => projectUsageLimits({ providers: undefined, sources: [] })).toThrow(
+    expect(() => Effect.runSync(projectUsageLimits({ providers: undefined, sources: [] }))).toThrow(
       "The usage-limits input must include provider and source arrays.",
     );
+  });
+
+  it("rejects empty window identifiers and labels", () => {
+    for (const window of [
+      { id: "", label: "Session", kind: "session", usedPercent: 10 },
+      { id: "session", label: "", kind: "session", usedPercent: 10 },
+    ]) {
+      const report = Effect.runSync(projectUsageLimits({
+        providers: [{ instanceId: "provider", driver: "codex", usageLimits: {
+          checkedAt: "2026-10-31T11:00:00.000Z", windows: [window],
+        } }],
+        sources: [],
+      }));
+      expect(report.providers[0]).toMatchObject({ unavailable: true, reason: "invalidSnapshot", windows: [] });
+    }
   });
 });
