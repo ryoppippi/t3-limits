@@ -12,21 +12,21 @@ with that server. For this private repository, configure Nix's GitHub
 authentication or use authenticated SSH access instead:
 
 ```sh
-nix run git+ssh://git@github.com/ryoppippi/t3-limits -- --json
+nix run git+ssh://git@github.com/ryoppippi/t3-limits
 ```
 
 The GitHub reference below assumes Nix already has access. You can substitute
 the SSH reference in any of these commands.
 
 ```sh
-nix run github:ryoppippi/t3-limits -- --json
+nix run github:ryoppippi/t3-limits
 ```
 
 If the installed T3 CLI is not on `PATH`, set its absolute executable path
 (for example, when T3 installed it under `~/.t3/bin`):
 
 ```sh
-T3CODE_CLI_PATH=$HOME/.t3/bin/t3 nix run github:ryoppippi/t3-limits -- --json
+T3CODE_CLI_PATH=$HOME/.t3/bin/t3 nix run github:ryoppippi/t3-limits
 ```
 
 When neither `--token-file` nor `T3_LIMITS_TOKEN` is supplied, each live
@@ -44,8 +44,11 @@ t3-limits --fixture <path> [--json]
 ```
 
 Here, `t3-limits ...` means `nix run github:ryoppippi/t3-limits -- ...`.
-Omit `--json` for a readable report. `--token-file` reads a token from the
-given file; tokens are never accepted directly as command-line arguments.
+By default, `t3-limits` prints a readable table. When Gunshi detects an AI
+agent, it prints enumerated text. Explicit `--json` always
+prints the allowlisted JSON report, including when an agent is detected.
+`--token-file` reads a token from the given file; tokens are never accepted
+directly as command-line arguments.
 If the installed T3 CLI is not on `PATH`, set `T3CODE_CLI_PATH` to its
 absolute executable path. `--fixture` cannot be combined with connection
 options.
@@ -82,7 +85,7 @@ T3_LIMITS_TOKEN=op://vault-name/item-name/field-name
 Run through `op run` so the token is injected into the process environment:
 
 ```sh
-op run --env-file=./t3-limits.env -- nix run github:ryoppippi/t3-limits -- --json
+op run --env-file=./t3-limits.env -- nix run github:ryoppippi/t3-limits
 ```
 
 The compiled CLI does not load dotenv files implicitly.

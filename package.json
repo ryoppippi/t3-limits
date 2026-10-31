@@ -17,6 +17,7 @@
     "@types/bun": "1.4.4"
   },
   "dependencies": {
+    "consola": "3.4.2",
     "effect": "4.1.1",
     "gunshi": "0.37.3"
   }

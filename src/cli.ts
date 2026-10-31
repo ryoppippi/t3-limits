@@ -1,4 +1,5 @@
 import { cli, define, type CommandContext } from "gunshi";
+import { getAgentProfile } from "gunshi/agent";
 import { string } from "gunshi/combinators";
 import * as Effect from "effect/Effect";
 import packageJson from "../package.json" with { type: "json" };
@@ -10,7 +11,7 @@ import {
   safeFailureMessage,
   type AppFailure,
 } from "./errors.ts";
-import { type UsageLimitReport, type UsageLimitRow } from "./limits.ts";
+import { printUsageReport, reportOutputMode } from "./report-output.ts";
 import {
   defaultUsageReportDependencies,
   readUsageReport,
@@ -20,55 +21,6 @@ import {
 
 interface CliOptions extends UsageReportOptions {
   readonly json: boolean;
-}
-
-function cleanText(value: string): string {
-  return value.replace(/[\u0000-\u001f\u007f]/g, " ");
-}
-
-function formatRow(row: UsageLimitRow): string[] {
-  const enabled =
-    row.enabled === undefined ? "" : row.enabled ? " · enabled" : " · disabled";
-  const checkedAt =
-    row.checkedAt === undefined ? "" : ` · checked ${row.checkedAt}`;
-  const lines = [
-    `${cleanText(row.label)} (${cleanText(row.driver)} · ${cleanText(row.id)})${enabled}${checkedAt}`,
-  ];
-  if (row.unavailable)
-    lines.push(`  unavailable: ${row.reason ?? "invalidSnapshot"}`);
-  for (const window of row.windows) {
-    const reset =
-      window.resetsAt === undefined ? "" : ` · resets ${window.resetsAt}`;
-    const duration =
-      window.windowDurationMins === undefined
-        ? ""
-        : ` · ${window.windowDurationMins} min window`;
-    lines.push(
-      `  ${cleanText(window.label)}: ${window.usedPercent}% used · ${window.remainingPercent}% remaining${reset}${duration}`,
-    );
-  }
-  return lines;
-}
-
-function printReport(
-  report: UsageLimitReport,
-  json: boolean,
-): Effect.Effect<void> {
-  return Effect.sync(() => {
-    if (json) {
-      console.log(JSON.stringify(report, null, 2));
-      return;
-    }
-
-    console.log(`Usage limits retrieved at ${report.retrievedAt}`);
-    if (report.providers.length === 0)
-      console.log("No provider usage limits were reported.");
-    for (const row of report.providers) {
-      for (const line of formatRow(row)) console.log(line);
-    }
-    for (const notice of report.notices)
-      console.log(`Notice: ${cleanText(notice)}`);
-  });
 }
 
 type CliInvocation =
@@ -114,7 +66,7 @@ function createCommands(setInvocation: (invocation: CliInvocation) => void) {
     args: {
       json: {
         type: "boolean",
-        description: "Print an allowlisted JSON report",
+        description: "Print allowlisted JSON instead of the readable report",
       },
       fixture: {
         ...string({
@@ -210,7 +162,12 @@ export const runCli = Effect.fnUntraced(function* (
   }
   const { json, ...reportOptions } = parsed.options;
   const report = yield* readUsageReport(reportOptions, dependencies);
-  yield* printReport(report, json);
+  yield* Effect.sync(() =>
+    printUsageReport(
+      report,
+      reportOutputMode({ json, isAgent: getAgentProfile().isAgent }),
+    ),
+  );
 });
 
 if (import.meta.main) {
