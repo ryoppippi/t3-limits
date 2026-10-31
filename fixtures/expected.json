@@ -1,0 +1,53 @@
+[
+  {
+    "id": "claudeAgent",
+    "driver": "claudeAgent",
+    "label": "Claude",
+    "enabled": true,
+    "checkedAt": "2026-10-31T11:58:00+00:00",
+    "status": "ok",
+    "windows": [
+      {
+        "id": "session",
+        "label": "Session",
+        "usedPercent": 72.5,
+        "remainingPercent": 27.5,
+        "resetsAt": "2026-10-31T15:00:00+00:00"
+      },
+      {
+        "id": "weekly",
+        "label": "Weekly",
+        "usedPercent": 23,
+        "remainingPercent": 77,
+        "resetsAt": null
+      }
+    ]
+  },
+  {
+    "id": "cursor",
+    "driver": "cursor",
+    "label": "cursor",
+    "enabled": true,
+    "checkedAt": "2026-10-31T11:57:00+00:00",
+    "status": "unsupported",
+    "windows": []
+  },
+  {
+    "id": "codex",
+    "driver": "codex",
+    "label": "Codex",
+    "enabled": true,
+    "checkedAt": "2026-10-31T11:56:00+00:00",
+    "status": "probeFailed",
+    "windows": []
+  },
+  {
+    "id": "pi",
+    "driver": "pi",
+    "label": "pi",
+    "enabled": false,
+    "checkedAt": null,
+    "status": "notReported",
+    "windows": []
+  }
+]
