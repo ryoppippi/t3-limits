@@ -17,6 +17,7 @@ import {
   InputFailure,
   ProcessFailure,
   RpcFailure,
+  isAppFailure,
   safeFailureMessage,
   type AppFailure,
 } from "./errors.ts";
@@ -41,12 +42,21 @@ interface CliOptions {
 
 function readJsonFile(
   path: string,
-  safeMessage: string,
+  message: string,
 ): Effect.Effect<unknown, InputFailure> {
-  return Effect.tryPromise({
-    try: async () => JSON.parse(await Bun.file(path).text()) as unknown,
-    catch: () => new InputFailure({ safeMessage }),
-  });
+  return Effect.flatMap(
+    Effect.tryPromise({
+      try: () => Bun.file(path).text(),
+      catch: () => new InputFailure({ message }),
+    }),
+    (contents) =>
+      Effect.mapError(
+        Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(
+          contents,
+        ),
+        () => new InputFailure({ message }),
+      ),
+  );
 }
 
 const FixtureSchema = Schema.Struct({
@@ -54,55 +64,50 @@ const FixtureSchema = Schema.Struct({
   sources: Schema.optional(Schema.Unknown),
 });
 
-function fixtureReport(
+const fixtureReport = Effect.fnUntraced(function* (
   path: string,
-): Effect.Effect<UsageLimitReport, InputFailure> {
-  return Effect.gen(function* () {
-    const fixture = yield* readJsonFile(
-      path,
-      "Could not read the usage-limits fixture.",
-    );
-    const decoded = yield* Effect.mapError(
-      Schema.decodeUnknownEffect(FixtureSchema)(fixture),
-      () =>
-        new InputFailure({
-          safeMessage: "The usage-limits fixture must be a JSON object.",
-        }),
-    );
-    return yield* projectUsageLimits({
-      providers: decoded.providers,
-      sources: decoded.sources,
-    });
+): Effect.fn.Return<UsageLimitReport, InputFailure> {
+  const fixture = yield* readJsonFile(
+    path,
+    "Could not read the usage-limits fixture.",
+  );
+  const decoded = yield* Effect.mapError(
+    Schema.decodeUnknownEffect(FixtureSchema)(fixture),
+    () =>
+      new InputFailure({
+        message: "The usage-limits fixture must be a JSON object.",
+      }),
+  );
+  return yield* projectUsageLimits({
+    providers: decoded.providers,
+    sources: decoded.sources,
   });
-}
+});
 
 const RuntimeStateSchema = Schema.Struct({ origin: Schema.String });
 
-function runtimeOrigin(
+const runtimeOrigin = Effect.fnUntraced(function* (
   home: string | undefined,
-): Effect.Effect<string, InputFailure> {
+): Effect.fn.Return<string, InputFailure> {
   const statePath = join(
     home ?? homedir(),
     ".t3",
     "userdata",
     "server-runtime.json",
   );
-  return Effect.gen(function* () {
-    const runtime = yield* readJsonFile(
-      statePath,
-      "T3 server runtime state could not be read.",
-    );
-    const decoded = yield* Effect.mapError(
-      Schema.decodeUnknownEffect(RuntimeStateSchema)(runtime),
-      () =>
-        new InputFailure({
-          safeMessage:
-            "T3 server runtime state does not contain a valid origin.",
-        }),
-    );
-    return decoded.origin;
-  });
-}
+  const runtime = yield* readJsonFile(
+    statePath,
+    "T3 server runtime state could not be read.",
+  );
+  const decoded = yield* Effect.mapError(
+    Schema.decodeUnknownEffect(RuntimeStateSchema)(runtime),
+    () =>
+      new InputFailure({
+        message: "T3 server runtime state does not contain a valid origin.",
+      }),
+  );
+  return decoded.origin;
+});
 
 interface CliDependencies {
   readonly env: Readonly<Record<string, string | undefined>>;
@@ -124,7 +129,7 @@ function configuredT3Executable(
   if (!isAbsolute(value)) {
     return Effect.fail(
       new CliFailure({
-        safeMessage:
+        message:
           "T3CODE_CLI_PATH must be a non-empty absolute executable path.",
       }),
     );
@@ -132,58 +137,56 @@ function configuredT3Executable(
   return Effect.succeed(value);
 }
 
-function liveReport(
+const liveReport = Effect.fnUntraced(function* (
   options: CliOptions,
   dependencies: CliDependencies,
-): Effect.Effect<UsageLimitReport, AppFailure> {
-  return Effect.gen(function* () {
-    const origin = options.origin ?? (yield* runtimeOrigin(options.home));
-    yield* webSocketUrl(origin, true);
-    const token = yield* readBearerToken({
-      origin,
-      tokenFile: options.tokenFile,
-      env: dependencies.env,
-      readFile: dependencies.readFile,
-      onMissing: (missingOrigin) =>
-        Effect.gen(function* () {
-          if (options.origin !== undefined) {
-            const discoveredOrigin = yield* runtimeOrigin(options.home);
-            const missingName = yield* canonicalLoopbackOrigin(missingOrigin);
-            const discoveredName =
-              yield* canonicalLoopbackOrigin(discoveredOrigin);
-            if (missingName !== discoveredName) {
-              return yield* Effect.fail(
-                new AuthFailure({
-                  safeMessage:
-                    "The --url override does not match the runtime server. Provide T3_LIMITS_TOKEN or --token-file to use this URL without automatic token setup.",
-                }),
-              );
-            }
+): Effect.fn.Return<UsageLimitReport, AppFailure> {
+  const origin = options.origin ?? (yield* runtimeOrigin(options.home));
+  yield* webSocketUrl(origin, true);
+  const token = yield* readBearerToken({
+    origin,
+    tokenFile: options.tokenFile,
+    env: dependencies.env,
+    readFile: dependencies.readFile,
+    onMissing: (missingOrigin) =>
+      Effect.gen(function* () {
+        if (options.origin !== undefined) {
+          const discoveredOrigin = yield* runtimeOrigin(options.home);
+          const missingName = yield* canonicalLoopbackOrigin(missingOrigin);
+          const discoveredName =
+            yield* canonicalLoopbackOrigin(discoveredOrigin);
+          if (missingName !== discoveredName) {
+            return yield* Effect.fail(
+              new AuthFailure({
+                message:
+                  "The --url override does not match the runtime server. Provide T3_LIMITS_TOKEN or --token-file to use this URL without automatic token setup.",
+              }),
+            );
           }
-          const executable = yield* configuredT3Executable(
-            dependencies.env.T3CODE_CLI_PATH,
-          );
-          return yield* issueScopedToken({
-            executable,
-            baseDir: join(options.home ?? homedir(), ".t3"),
-            spawn: dependencies.spawn,
-          });
-        }),
-    });
-    const data = yield* Effect.mapError(
-      (dependencies.readUsageLimits ?? readUsageLimitStreams)({
-        origin,
-        token,
+        }
+        const executable = yield* configuredT3Executable(
+          dependencies.env.T3CODE_CLI_PATH,
+        );
+        return yield* issueScopedToken({
+          executable,
+          baseDir: join(options.home ?? homedir(), ".t3"),
+          spawn: dependencies.spawn,
+        });
       }),
-      () =>
-        new RpcFailure({
-          safeMessage:
-            "Could not retrieve T3 usage limits. Check the server connection and supplied credential.",
-        }),
-    );
-    return yield* projectUsageLimits(data);
   });
-}
+  const data = yield* Effect.mapError(
+    (dependencies.readUsageLimits ?? readUsageLimitStreams)({
+      origin,
+      token,
+    }),
+    () =>
+      new RpcFailure({
+        message:
+          "Could not retrieve T3 usage limits. Check the server connection and supplied credential.",
+      }),
+  );
+  return yield* projectUsageLimits(data);
+});
 
 function cleanText(value: string): string {
   return value.replace(/[\u0000-\u001f\u007f]/g, " ");
@@ -239,7 +242,7 @@ type CliInvocation =
   | { readonly kind: "guide" };
 
 function parserFailure(message: string): never {
-  throw new CliFailure({ safeMessage: message });
+  throw new CliFailure({ message: message });
 }
 
 function validateParsedArguments(ctx: Readonly<CommandContext>): void {
@@ -339,71 +342,59 @@ function createCommands(setInvocation: (invocation: CliInvocation) => void) {
   return { report };
 }
 
-export function runCli(
+export const runCli = Effect.fnUntraced(function* (
   args: readonly string[],
   dependencies: CliDependencies = defaultDependencies,
-): Effect.Effect<void, AppFailure> {
-  return Effect.gen(function* () {
-    let invocation: CliInvocation | undefined;
-    const parsed = yield* Effect.tryPromise({
-      try: async () => {
-        const { report } = createCommands((value) => {
-          invocation = value;
+): Effect.fn.Return<void, AppFailure> {
+  let invocation: CliInvocation | undefined;
+  const parsed = yield* Effect.tryPromise({
+    try: async () => {
+      const { report } = createCommands((value) => {
+        invocation = value;
+      });
+      const usage = await cli([...args], report, {
+        name: packageJson.name,
+        version: packageJson.version,
+        description: "Read usage limits from a running T3 Code server",
+        fallbackToEntry: true,
+        strict: true,
+        usageSilent: true,
+        renderHeader: async () => "",
+        renderUsage: async () => guide,
+        renderValidationErrors: async () => "",
+        onBeforeCommand: validateParsedArguments,
+      });
+      if (usage !== undefined) {
+        console.log(usage.trimEnd());
+        return undefined;
+      }
+      if (invocation === undefined) {
+        throw new CliFailure({
+          message: "Invalid command-line arguments.",
         });
-        const usage = await cli([...args], report, {
-          name: packageJson.name,
-          version: packageJson.version,
-          description: "Read usage limits from a running T3 Code server",
-          fallbackToEntry: true,
-          strict: true,
-          usageSilent: true,
-          renderHeader: async () => "",
-          renderUsage: async () => guide,
-          renderValidationErrors: async () => "",
-          onBeforeCommand: validateParsedArguments,
-        });
-        if (usage !== undefined) {
-          console.log(usage.trimEnd());
-          return undefined;
-        }
-        if (invocation === undefined) {
-          throw new CliFailure({
-            safeMessage: "Invalid command-line arguments.",
-          });
-        }
-        return invocation;
-      },
-      catch: (error) =>
-        isAppFailure(error)
-          ? error
-          : new CliFailure({
-              safeMessage:
-                "Invalid command-line arguments. Run --help to see the supported flags.",
-            }),
-    });
-
-    if (parsed === undefined) return;
-    if (parsed.kind === "guide") {
-      console.log(guide.trimEnd());
-      return;
-    }
-    const report =
-      parsed.options.fixture === undefined
-        ? yield* liveReport(parsed.options, dependencies)
-        : yield* fixtureReport(parsed.options.fixture);
-    yield* printReport(report, parsed.options.json);
+      }
+      return invocation;
+    },
+    catch: (error) =>
+      isAppFailure(error)
+        ? error
+        : new CliFailure({
+            message:
+              "Invalid command-line arguments. Run --help to see the supported flags.",
+          }),
   });
-}
 
-function isAppFailure(error: unknown): error is AppFailure {
-  return (
-    error instanceof InputFailure ||
-    error instanceof AuthFailure ||
-    error instanceof ProcessFailure ||
-    error instanceof RpcFailure ||
-    error instanceof CliFailure
-  );
-}
+  if (parsed === undefined) return;
+  if (parsed.kind === "guide") {
+    console.log(guide.trimEnd());
+    return;
+  }
+  const report =
+    parsed.options.fixture === undefined
+      ? yield* liveReport(parsed.options, dependencies)
+      : yield* fixtureReport(parsed.options.fixture);
+  yield* printReport(report, parsed.options.json);
+});
 
 if (import.meta.main) {
   const reportFailure = (failure: AppFailure) =>
@@ -411,12 +402,9 @@ if (import.meta.main) {
       console.error(`Error: ${safeFailureMessage(failure)}`);
       process.exitCode = 1;
     });
-  const program = Effect.catchTags(runCli(Bun.argv.slice(2)), {
-    InputFailure: reportFailure,
-    AuthFailure: reportFailure,
-    ProcessFailure: reportFailure,
-    RpcFailure: reportFailure,
-    CliFailure: reportFailure,
+  const program = Effect.matchEffect(runCli(Bun.argv.slice(2)), {
+    onFailure: reportFailure,
+    onSuccess: () => Effect.void,
   });
   await Effect.runPromise(
     Effect.catchDefect(program, () =>

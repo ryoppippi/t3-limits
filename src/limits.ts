@@ -1,6 +1,7 @@
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as DateTime from "effect/DateTime";
 
 import {
   ServerProviderUsageLimits,
@@ -122,7 +123,10 @@ function stringValue(value: unknown): string | undefined {
 }
 
 function checkedTimestamp(value: unknown): string | undefined {
-  if (typeof value !== "string" || !Number.isFinite(Date.parse(value)))
+  if (
+    typeof value !== "string" ||
+    Option.isNone(DateTime.make(new Date(value)))
+  )
     return undefined;
   return value;
 }
@@ -132,7 +136,7 @@ function decodeOption<S extends Schema.ConstraintDecoder<unknown>>(
   value: unknown,
 ): S["Type"] | undefined {
   const decoded = Schema.decodeUnknownOption(schema)(value);
-  return Option.isSome(decoded) ? decoded.value : undefined;
+  return Option.getOrUndefined(decoded);
 }
 
 function windowsFrom(
@@ -258,80 +262,74 @@ function projectSourceAccount(
 }
 
 /** Projects the two T3 usage-limit streams onto a small, explicit output allowlist. */
-export function projectUsageLimits(input: {
+export const projectUsageLimits = Effect.fnUntraced(function* (input: {
   readonly providers: unknown;
   readonly sources: unknown;
   readonly retrievedAt?: string;
-}): Effect.Effect<UsageLimitReport, InputFailure> {
+}): Effect.fn.Return<UsageLimitReport, InputFailure> {
   const decodedInput = Schema.decodeUnknownEffect(UsageLimitInputSchema)({
     providers: input.providers,
     sources: input.sources,
   });
-  return Effect.gen(function* () {
-    const data = yield* Effect.mapError(
-      decodedInput,
-      () =>
-        new InputFailure({
-          safeMessage:
-            "The usage-limits input must include provider and source arrays.",
-        }),
-    );
-    const retrievedAt =
-      checkedTimestamp(input.retrievedAt) ?? new Date().toISOString();
-    const rows: UsageLimitRow[] = [];
-    const notices: string[] = [];
+  const data = yield* Effect.mapError(
+    decodedInput,
+    () =>
+      new InputFailure({
+        message:
+          "The usage-limits input must include provider and source arrays.",
+      }),
+  );
+  const retrievedAt =
+    checkedTimestamp(input.retrievedAt) ??
+    DateTime.formatIso(yield* DateTime.now);
+  const rows: UsageLimitRow[] = [];
+  const notices: string[] = [];
 
-    for (const value of data.providers) {
-      const row = projectProvider(value);
+  for (const value of data.providers) {
+    const row = projectProvider(value);
+    if (row) rows.push(row);
+    else
+      notices.push("Some provider usage-limit data was invalid and omitted.");
+  }
+
+  for (const value of data.sources) {
+    const source = decodeOption(SourceInputSchema, value);
+    if (source === undefined) {
+      notices.push("Some usage-limit source data was invalid and omitted.");
+      continue;
+    }
+    const sourceId = stringValue(source.id) ?? "unknown";
+    const sourceLabel = stringValue(source.label) ?? "Usage limit source";
+    const checkedAt = checkedTimestamp(source.checkedAt);
+    if (stringValue(source.error) !== undefined) {
+      notices.push(
+        `Usage limit source ${sourceId} (${sourceLabel}) reported an error${checkedAt === undefined ? "" : `; checked at ${checkedAt}`}.`,
+      );
+    }
+    if (!Array.isArray(source.accounts)) {
+      notices.push(
+        `Usage limit source ${sourceId} (${sourceLabel}) contained invalid data.`,
+      );
+      continue;
+    }
+    for (const account of source.accounts) {
+      const row = projectSourceAccount(source, sourceId, sourceLabel, account);
       if (row) rows.push(row);
       else
-        notices.push("Some provider usage-limit data was invalid and omitted.");
-    }
-
-    for (const value of data.sources) {
-      const source = decodeOption(SourceInputSchema, value);
-      if (source === undefined) {
         notices.push("Some usage-limit source data was invalid and omitted.");
-        continue;
-      }
-      const sourceId = stringValue(source.id) ?? "unknown";
-      const sourceLabel = stringValue(source.label) ?? "Usage limit source";
-      const checkedAt = checkedTimestamp(source.checkedAt);
-      if (stringValue(source.error) !== undefined) {
-        notices.push(
-          `Usage limit source ${sourceId} (${sourceLabel}) reported an error${checkedAt === undefined ? "" : `; checked at ${checkedAt}`}.`,
-        );
-      }
-      if (!Array.isArray(source.accounts)) {
-        notices.push(
-          `Usage limit source ${sourceId} (${sourceLabel}) contained invalid data.`,
-        );
-        continue;
-      }
-      for (const account of source.accounts) {
-        const row = projectSourceAccount(
-          source,
-          sourceId,
-          sourceLabel,
-          account,
-        );
-        if (row) rows.push(row);
-        else
-          notices.push("Some usage-limit source data was invalid and omitted.");
-      }
     }
+  }
 
-    const report = {
-      retrievedAt,
-      providers: rows,
-      notices: [...new Set(notices)],
-    };
-    return yield* Effect.mapError(
-      Schema.decodeUnknownEffect(UsageLimitReportSchema)(report),
-      () =>
-        new InputFailure({
-          safeMessage: "The usage-limits report could not be created safely.",
-        }),
-    );
-  });
-}
+  const report = {
+    retrievedAt,
+    providers: rows,
+    notices: [...new Set(notices)],
+  };
+  return yield* Effect.mapError(
+    Schema.decodeUnknownEffect(UsageLimitReportSchema)(report),
+    () =>
+      new InputFailure({
+        message: "The usage-limits report could not be created safely.",
+      }),
+  );
+});

@@ -1,6 +1,9 @@
 import { describe, expect, it } from "bun:test";
 import * as Effect from "effect/Effect";
+import { mkdtemp, rm } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { runCli } from "./cli.ts";
 
@@ -53,6 +56,36 @@ describe("t3-limits CLI", () => {
     expect(printed).not.toContain("fixture-secret");
     expect(printed).not.toContain("fixture-provider-error-must-not-be-printed");
     expect(printed).not.toContain("fixture-source-error-must-not-be-printed");
+  });
+
+  it("maps malformed fixture JSON without exposing its contents", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "t3-limits-json-"));
+    const fixturePath = join(directory, "fixture.json");
+    const sentinel = "fixture-token-secret-sentinel-1dc4";
+    await Bun.write(fixturePath, `{"token":"${sentinel}"`);
+
+    try {
+      const failure = await Effect.runPromise(
+        runCli(
+          ["--fixture", fixturePath],
+          noIoDependencies({
+            fileReads: { value: 0 },
+            processSpawns: { value: 0 },
+          }),
+        ),
+      ).then(
+        () => undefined,
+        (reason: unknown) => reason,
+      );
+
+      expect(String(failure)).toContain(
+        "Could not read the usage-limits fixture.",
+      );
+      expect(String(failure)).not.toContain(sentinel);
+      expect(JSON.stringify(failure)).not.toContain(sentinel);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 
   it("rejects unknown, positional, repeated, and conflicting input before IO", async () => {
