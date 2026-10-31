@@ -1,7 +1,9 @@
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
+import { cli, define, type CommandContext } from "gunshi";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import packageJson from "../package.json" with { type: "json" };
 
 import {
   issueAndStoreScopedToken,
@@ -23,87 +25,11 @@ import { projectUsageLimits, type UsageLimitReport, type UsageLimitRow } from ".
 import { canonicalSecretOrigin, readUsageLimitStreams, webSocketUrl } from "./rpc.ts";
 
 interface CliOptions {
-  readonly help: boolean;
   readonly json: boolean;
   readonly fixture?: string;
   readonly home?: string;
   readonly origin?: string;
   readonly tokenFile?: string;
-}
-
-function failure(message: string): never {
-  throw new CliFailure({ safeMessage: message });
-}
-
-function parseArgs(args: readonly string[]): CliOptions {
-  let help = false;
-  let json = false;
-  let fixture: string | undefined;
-  let home: string | undefined;
-  let origin: string | undefined;
-  let tokenFile: string | undefined;
-
-  const takeValue = (flag: string, index: number): string => {
-    const value = args[index + 1];
-    if (value === undefined || value.startsWith("--")) failure(`Expected a value after ${flag}.`);
-    return value;
-  };
-
-  for (let index = 0; index < args.length; index += 1) {
-    const argument = args[index];
-    switch (argument) {
-      case "--help":
-      case "-h":
-        help = true;
-        break;
-      case "--json":
-        json = true;
-        break;
-      case "--fixture":
-        if (fixture !== undefined) failure("--fixture can only be used once.");
-        fixture = takeValue(argument, index);
-        index += 1;
-        break;
-      case "--home":
-        if (home !== undefined) failure("--home can only be used once.");
-        home = takeValue(argument, index);
-        index += 1;
-        break;
-      case "--url":
-        if (origin !== undefined) failure("--url can only be used once.");
-        origin = takeValue(argument, index);
-        index += 1;
-        break;
-      case "--token-file":
-        if (tokenFile !== undefined) failure("--token-file can only be used once.");
-        tokenFile = takeValue(argument, index);
-        index += 1;
-        break;
-      default:
-        failure("Unknown option. Run --help to see the supported flags.");
-    }
-  }
-
-  if (fixture !== undefined && (home !== undefined || origin !== undefined || tokenFile !== undefined)) {
-    failure("--fixture cannot be combined with connection options.");
-  }
-  return {
-    help,
-    json,
-    ...(fixture === undefined ? {} : { fixture }),
-    ...(home === undefined ? {} : { home }),
-    ...(origin === undefined ? {} : { origin }),
-    ...(tokenFile === undefined ? {} : { tokenFile }),
-  };
-}
-
-function parseWithSafeFailure<A>(parse: () => A): Effect.Effect<A, CliFailure> {
-  return Effect.try({
-    try: parse,
-    catch: (error) => error instanceof CliFailure
-      ? error
-      : new CliFailure({ safeMessage: "Invalid command-line arguments." }),
-  });
 }
 
 function readJsonFile(path: string, safeMessage: string): Effect.Effect<unknown, InputFailure> {
@@ -244,14 +170,14 @@ function printReport(report: UsageLimitReport, json: boolean): Effect.Effect<voi
   });
 }
 
-const HELP = `t3-limits — read usage limits from a running T3 Code server
+const HELP = `${packageJson.name} — read usage limits from a running T3 Code server
 
 Usage:
-  t3-limits [--json] [--url <loopback-origin>] [--home <home-directory>]
+  ${packageJson.name} [--json] [--url <loopback-origin>] [--home <home-directory>]
             [--token-file <path>]
-  t3-limits --fixture <path> [--json]
-  t3-limits auth login [--home <home-directory>] [--t3-bin <path>]
-  t3-limits auth logout [--home <home-directory> | --url <loopback-origin>]
+  ${packageJson.name} --fixture <path> [--json]
+  ${packageJson.name} auth login [--home <home-directory>] [--t3-bin <path>]
+  ${packageJson.name} auth logout [--home <home-directory> | --url <loopback-origin>]
 
 Options:
   --json               Print an allowlisted JSON report.
@@ -263,8 +189,8 @@ Options:
 `;
 
 const AUTH_HELP = `Usage:
-  t3-limits auth login [--home <home-directory>] [--t3-bin <path>]
-  t3-limits auth logout [--home <home-directory> | --url <loopback-origin>]
+  ${packageJson.name} auth login [--home <home-directory>] [--t3-bin <path>]
+  ${packageJson.name} auth logout [--home <home-directory> | --url <loopback-origin>]
 
 login issues a one-hour orchestration:read token and stores it in the OS secret store.
 logout removes only the local token; it does not revoke the server session.
@@ -277,45 +203,133 @@ interface AuthOptions {
   readonly t3Bin?: string;
 }
 
-function parseAuthArgs(args: readonly string[]): AuthOptions | "help" {
-  const command = args[0];
-  if (args.length === 2 && (command === "login" || command === "logout") && (args[1] === "--help" || args[1] === "-h")) return "help";
-  if (args.length === 1 && (command === "--help" || command === "-h")) return "help";
-  if (command !== "login" && command !== "logout") failure("Expected `auth login` or `auth logout`.");
-  let home: string | undefined;
-  let origin: string | undefined;
-  let t3Bin: string | undefined;
-  for (let index = 1; index < args.length; index += 1) {
-    const flag = args[index];
-    const value = args[index + 1];
-    if (value === undefined || value.startsWith("--")) failure("Expected an option value.");
-    if (flag === "--home") {
-      if (home !== undefined) failure("--home can only be used once.");
-      home = value;
-    } else if (flag === "--url") {
-      if (origin !== undefined) failure("--url can only be used once.");
-      origin = value;
-    } else if (flag === "--t3-bin") {
-      if (t3Bin !== undefined) failure("--t3-bin can only be used once.");
-      t3Bin = value;
-    } else {
-      failure("Unknown auth option. Run `t3-limits auth --help` to see supported options.");
-    }
-    index += 1;
-  }
-  if (home !== undefined && origin !== undefined) failure("Use either --home or --url, not both.");
-  if (command === "login" && origin !== undefined) failure("auth login discovers the server origin from runtime state; --url is not supported.");
-  if (command === "logout" && t3Bin !== undefined) failure("--t3-bin is only supported by auth login.");
-  return { command, ...(home === undefined ? {} : { home }), ...(origin === undefined ? {} : { origin }), ...(t3Bin === undefined ? {} : { t3Bin }) };
+type CliInvocation =
+  | { readonly kind: "report"; readonly options: CliOptions }
+  | { readonly kind: "auth"; readonly options: AuthOptions };
+
+function parserFailure(message: string): never {
+  throw new CliFailure({ safeMessage: message });
 }
 
-function runAuth(args: readonly string[], dependencies: CliDependencies): Effect.Effect<void, AppFailure> {
-  return Effect.gen(function*() {
-    const options = yield* parseWithSafeFailure(() => parseAuthArgs(args));
-    if (options === "help") {
-      yield* Effect.sync(() => console.log(AUTH_HELP));
-      return;
+function validateParsedArguments(ctx: Readonly<CommandContext>): void {
+  if (ctx.values.help === true || ctx.values.version === true) return;
+
+  if (ctx.callMode === "unexpected" || ctx.positionals.length !== ctx.commandPath.length || ctx.positionals.some((value, index) => value !== ctx.commandPath[index]) || ctx.rest.length > 0 || ctx.tokens.some((token) => token.kind === "option-terminator")) {
+    parserFailure("Unexpected positional argument. Run --help to see the supported commands.");
+  }
+
+  const optionNames = new Map<string, string>();
+  const booleanOptions = new Set<string>();
+  for (const [name, schema] of Object.entries(ctx.args)) {
+    if (schema.type === "positional") continue;
+    if (schema.type === "boolean") {
+      booleanOptions.add(name);
+      if (schema.short !== undefined) booleanOptions.add(schema.short);
+      continue;
     }
+    optionNames.set(name, name);
+    if (schema.short !== undefined) optionNames.set(schema.short, name);
+  }
+
+  const seen = new Set<string>();
+  for (const token of ctx.tokens) {
+    if (token.kind !== "option" || token.name === undefined) continue;
+    if (booleanOptions.has(token.name) && token.inlineValue === true) {
+      parserFailure("Boolean options do not accept a value.");
+    }
+    const name = optionNames.get(token.name);
+    if (name === undefined) continue;
+    if (seen.has(name)) parserFailure(`--${name} can only be used once.`);
+    seen.add(name);
+    if (ctx.values[name] === undefined || ctx.values[name] === "") parserFailure(`Expected a value after --${name}.`);
+  }
+
+}
+
+function createCommands(setInvocation: (invocation: CliInvocation) => void) {
+  const report = define({
+    name: packageJson.name,
+    description: "Read usage limits from a running T3 Code server",
+    args: {
+      json: { type: "boolean", description: "Print an allowlisted JSON report" },
+      fixture: {
+        type: "string",
+        description: "Read synthetic usage data from a JSON file",
+        conflicts: ["home", "url", "token-file"],
+      },
+      url: { type: "string", description: "Connect to a loopback server origin" },
+      home: { type: "string", description: "Use this OS home for runtime and auth state" },
+      "token-file": { type: "string", description: "Read a bearer token from a file" },
+    },
+    run: (ctx) => {
+      const { fixture, home, url: origin } = ctx.values;
+      const tokenFile = ctx.values["token-file"];
+      setInvocation({
+        kind: "report",
+        options: {
+          json: ctx.values.json === true,
+          ...(fixture === undefined ? {} : { fixture }),
+          ...(home === undefined ? {} : { home }),
+          ...(origin === undefined ? {} : { origin }),
+          ...(tokenFile === undefined ? {} : { tokenFile }),
+        },
+      });
+    },
+  });
+
+  const login = define({
+    name: "login",
+    description: "Issue and store a scoped usage token",
+    args: {
+      home: { type: "string", description: "Use this OS home for runtime and auth state" },
+      "t3-bin": { type: "string", description: "Path to the installed T3 CLI" },
+    },
+    run: (ctx) => {
+      const { home } = ctx.values;
+      const t3Bin = ctx.values["t3-bin"];
+      setInvocation({
+        kind: "auth",
+        options: {
+          command: "login",
+          ...(home === undefined ? {} : { home }),
+          ...(t3Bin === undefined ? {} : { t3Bin }),
+        },
+      });
+    },
+  });
+
+  const logout = define({
+    name: "logout",
+    description: "Remove the local usage token",
+    args: {
+      home: { type: "string", description: "Use this OS home for runtime and auth state", conflicts: "url" },
+      url: { type: "string", description: "Connect to a loopback server origin", conflicts: "home" },
+    },
+    run: (ctx) => {
+      const { home, url: origin } = ctx.values;
+      setInvocation({
+        kind: "auth",
+        options: {
+          command: "logout",
+          ...(home === undefined ? {} : { home }),
+          ...(origin === undefined ? {} : { origin }),
+        },
+      });
+    },
+  });
+
+  const auth = define({
+    name: "auth",
+    description: "Manage the local usage token",
+    subCommands: { login, logout },
+    run: () => parserFailure("Expected `auth login` or `auth logout`."),
+  });
+
+  return { report, auth };
+}
+
+function runAuth(options: AuthOptions, dependencies: CliDependencies): Effect.Effect<void, AppFailure> {
+  return Effect.gen(function*() {
     const origin = options.origin ?? (yield* runtimeOrigin(options.home));
     const name = yield* canonicalSecretOrigin(origin);
     const secretKey = { service: TOKEN_SERVICE, name };
@@ -344,20 +358,55 @@ function runAuth(args: readonly string[], dependencies: CliDependencies): Effect
 
 export function runCli(args: readonly string[], dependencies: CliDependencies = defaultDependencies): Effect.Effect<void, AppFailure> {
   return Effect.gen(function*() {
-    if (args[0] === "auth") {
-      yield* runAuth(args.slice(1), dependencies);
+    let invocation: CliInvocation | undefined;
+    const parsed = yield* Effect.tryPromise({
+      try: async () => {
+        const { report, auth } = createCommands((value) => { invocation = value; });
+        const usage = await cli([...args], report, {
+          name: packageJson.name,
+          version: packageJson.version,
+          description: "Read usage limits from a running T3 Code server",
+          subCommands: { auth },
+          fallbackToEntry: true,
+          strict: true,
+          usageSilent: true,
+          renderHeader: async () => "",
+          renderUsage: async (ctx) => ctx.commandPath[0] === "auth" ? AUTH_HELP : HELP,
+          renderValidationErrors: async () => "",
+          onBeforeCommand: validateParsedArguments,
+        });
+        if (usage !== undefined) {
+          console.log(usage);
+          return undefined;
+        }
+        if (invocation === undefined) {
+          throw new CliFailure({ safeMessage: "Expected `auth login` or `auth logout`." });
+        }
+        return invocation;
+      },
+      catch: (error) => isAppFailure(error)
+        ? error
+        : new CliFailure({ safeMessage: "Invalid command-line arguments. Run --help to see the supported flags." }),
+    });
+
+    if (parsed === undefined) return;
+    if (parsed.kind === "auth") {
+      yield* runAuth(parsed.options, dependencies);
       return;
     }
-    const options = yield* parseWithSafeFailure(() => parseArgs(args));
-    if (options.help) {
-      yield* Effect.sync(() => console.log(HELP));
-      return;
-    }
-    const report = options.fixture === undefined
-      ? yield* liveReport(options, dependencies)
-      : yield* fixtureReport(options.fixture);
-    yield* printReport(report, options.json);
+    const report = parsed.options.fixture === undefined
+      ? yield* liveReport(parsed.options, dependencies)
+      : yield* fixtureReport(parsed.options.fixture);
+    yield* printReport(report, parsed.options.json);
   });
+}
+
+function isAppFailure(error: unknown): error is AppFailure {
+  return error instanceof InputFailure
+    || error instanceof AuthFailure
+    || error instanceof ProcessFailure
+    || error instanceof RpcFailure
+    || error instanceof CliFailure;
 }
 
 if (import.meta.main) {

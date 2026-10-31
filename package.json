@@ -15,6 +15,7 @@
     "bun2nix": "2.1.2"
   },
   "dependencies": {
-    "effect": "4.1.1"
+    "effect": "4.1.1",
+    "gunshi": "0.37.3"
   }
 }
