@@ -13,9 +13,17 @@
       url = "github:numtide/llm-agents.nix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    agent-skills = {
+      url = "github:Kyure-A/agent-skills-nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    effect-skills = {
+      url = "github:Effect-TS/skills";
+      flake = false;
+    };
   };
 
-  outputs = { nixpkgs, nix-bun, bun2nix, llm-agents, ... }:
+  outputs = { nixpkgs, nix-bun, bun2nix, llm-agents, agent-skills, effect-skills, ... }:
     let
       systems = [ "aarch64-darwin" "aarch64-linux" "x86_64-linux" ];
       eachSystem = nixpkgs.lib.genAttrs systems;
@@ -79,6 +87,9 @@
             diff -u nix/bun.nix "$TMPDIR/generated-bun.nix"
             touch "$out"
           '';
+          agentSkillOutputs = import ./nix/agent-skills.nix {
+            inherit pkgs agent-skills effect-skills;
+          };
         in {
           packages = {
             default = cli;
@@ -92,9 +103,17 @@
             bun-format = bunFormatCheck;
             bun-nix = bunNixCheck;
           };
+          inherit agentSkillOutputs;
         };
     in {
-      packages = eachSystem (system: (perSystem system).packages);
-      checks = eachSystem (system: (perSystem system).checks);
+      packages = eachSystem (system:
+        let outputs = perSystem system;
+        in outputs.packages // outputs.agentSkillOutputs.packages
+      );
+      apps = eachSystem (system: (perSystem system).agentSkillOutputs.apps);
+      checks = eachSystem (system:
+        let outputs = perSystem system;
+        in outputs.checks // outputs.agentSkillOutputs.checks
+      );
     };
 }
