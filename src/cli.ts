@@ -1,4 +1,5 @@
 import { cli, define, type CommandContext } from "gunshi";
+import { string } from "gunshi/combinators";
 import * as Effect from "effect/Effect";
 import packageJson from "../package.json" with { type: "json" };
 import guide from "../docs/guide.md" with { type: "text" };
@@ -78,13 +79,11 @@ function parserFailure(message: string): never {
   throw new CliFailure({ message: message });
 }
 
-function validateParsedArguments(ctx: Readonly<CommandContext>): void {
+function rejectUnsupportedCliSyntax(ctx: Readonly<CommandContext>): void {
   if (ctx.values.help === true || ctx.values.version === true) return;
 
   if (
-    ctx.callMode === "unexpected" ||
-    ctx.positionals.length !== ctx.commandPath.length ||
-    ctx.positionals.some((value, index) => value !== ctx.commandPath[index]) ||
+    ctx.positionals.length > 0 ||
     ctx.rest.length > 0 ||
     ctx.tokens.some((token) => token.kind === "option-terminator")
   ) {
@@ -93,31 +92,18 @@ function validateParsedArguments(ctx: Readonly<CommandContext>): void {
     );
   }
 
-  const optionNames = new Map<string, string>();
-  const booleanOptions = new Set<string>();
-  for (const [name, schema] of Object.entries(ctx.args)) {
-    if (schema.type === "positional") continue;
-    if (schema.type === "boolean") {
-      booleanOptions.add(name);
-      if (schema.short !== undefined) booleanOptions.add(schema.short);
-      continue;
-    }
-    optionNames.set(name, name);
-    if (schema.short !== undefined) optionNames.set(schema.short, name);
-  }
-
   const seen = new Set<string>();
   for (const token of ctx.tokens) {
     if (token.kind !== "option" || token.name === undefined) continue;
-    if (booleanOptions.has(token.name) && token.inlineValue === true) {
+    const schema = ctx.args[token.name];
+    if (schema === undefined) continue;
+    if (schema.type === "boolean" && token.inlineValue === true) {
       parserFailure("Boolean options do not accept a value.");
     }
-    const name = optionNames.get(token.name);
-    if (name === undefined) continue;
-    if (seen.has(name)) parserFailure(`--${name} can only be used once.`);
-    seen.add(name);
-    if (ctx.values[name] === undefined || ctx.values[name] === "")
-      parserFailure(`Expected a value after --${name}.`);
+    if (schema.type !== "string") continue;
+    if (seen.has(token.name))
+      parserFailure(`--${token.name} can only be used once.`);
+    seen.add(token.name);
   }
 }
 
@@ -131,22 +117,24 @@ function createCommands(setInvocation: (invocation: CliInvocation) => void) {
         description: "Print an allowlisted JSON report",
       },
       fixture: {
-        type: "string",
-        description: "Read synthetic usage data from a JSON file",
+        ...string({
+          minLength: 1,
+          description: "Read synthetic usage data from a JSON file",
+        }),
         conflicts: ["home", "url", "token-file"],
       },
-      url: {
-        type: "string",
+      url: string({
+        minLength: 1,
         description: "Connect to a loopback server origin",
-      },
-      home: {
-        type: "string",
+      }),
+      home: string({
+        minLength: 1,
         description: "Use this OS home for T3 runtime state",
-      },
-      "token-file": {
-        type: "string",
+      }),
+      "token-file": string({
+        minLength: 1,
         description: "Read a bearer token from a file",
-      },
+      }),
       helpForAgents: {
         type: "boolean",
         description: "Print the complete setup and usage guide",
@@ -189,12 +177,11 @@ export const runCli = Effect.fnUntraced(function* (
         name: packageJson.name,
         version: packageJson.version,
         description: "Read usage limits from a running T3 Code server",
-        fallbackToEntry: true,
         strict: true,
         usageSilent: true,
         renderHeader: async () => "",
         renderValidationErrors: async () => "",
-        onBeforeCommand: validateParsedArguments,
+        onBeforeCommand: rejectUnsupportedCliSyntax,
       });
       if (usage !== undefined) {
         console.log(usage.trimEnd());
