@@ -1,0 +1,42 @@
+{
+  "manifests": {
+    "effect": {
+      "filter": {
+        "maxDepth": null,
+        "nameRegex": null
+      },
+      "idPrefix": null,
+      "pin": {
+        "at": null,
+        "branch": "main",
+        "owner": "Effect-TS",
+        "preReleases": false,
+        "releasePrefix": null,
+        "repo": "skills",
+        "submodules": false,
+        "type": "github",
+        "versionUpperBound": null
+      },
+      "subdir": "skills"
+    }
+  },
+  "npins": {
+    "pins": {
+      "effect": {
+        "branch": "main",
+        "hash": "sha256-GSmGLOQSp4taxckrg7vfMTD/mbkfBYjv7oBsvDJdyck=",
+        "repository": {
+          "owner": "Effect-TS",
+          "repo": "skills",
+          "type": "GitHub"
+        },
+        "revision": "155c50c911f9c99c294ef8a4461981c5bbe6453e",
+        "submodules": false,
+        "type": "Git",
+        "url": "https://github.com/Effect-TS/skills/archive/155c50c911f9c99c294ef8a4461981c5bbe6453e.tar.gz"
+      }
+    },
+    "version": 8
+  },
+  "schemaVersion": 1
+}

@@ -78,22 +78,6 @@
         "type": "github"
       }
     },
-    "effect-skills": {
-      "flake": false,
-      "locked": {
-        "lastModified": 1791583519,
-        "narHash": "sha256-GSmGLOQSp4taxckrg7vfMTD/mbkfBYjv7oBsvDJdyck=",
-        "owner": "Effect-TS",
-        "repo": "skills",
-        "rev": "155c50c911f9c99c294ef8a4461981c5bbe6453e",
-        "type": "github"
-      },
-      "original": {
-        "owner": "Effect-TS",
-        "repo": "skills",
-        "type": "github"
-      }
-    },
     "flake-parts": {
       "inputs": {
         "nixpkgs-lib": [
@@ -200,7 +184,6 @@
       "inputs": {
         "agent-skills": "agent-skills",
         "bun2nix": "bun2nix",
-        "effect-skills": "effect-skills",
         "llm-agents": "llm-agents",
         "nix-bun": "nix-bun",
         "nixpkgs": "nixpkgs"
