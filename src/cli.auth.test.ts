@@ -236,7 +236,7 @@ describe("live CLI authentication", () => {
         ...dependencies,
         env: {},
       }),
-    ).rejects.toThrow("Expected a value after --token-file.");
+    ).rejects.toThrow("Invalid command-line arguments.");
     await expect(
       runCliEffect(
         ["--url", "http://127.0.0.1:8318", "--token-file", "/missing"],
