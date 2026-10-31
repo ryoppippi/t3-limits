@@ -10,7 +10,10 @@
       "usageLimits": {
         "checkedAt": "2026-10-31T11:58:00.000Z",
         "credentialFingerprint": "fixture-fingerprint",
-        "resetCredits": { "availableCount": 4, "nextCreditId": "fixture-credit" },
+        "resetCredits": {
+          "availableCount": 4,
+          "nextCreditId": "fixture-credit"
+        },
         "windows": [
           {
             "id": "session",

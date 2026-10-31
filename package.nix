@@ -15,6 +15,7 @@ let
       ./package.json
       ./bun.lock
       ./bunfig.toml
+      ./.gitignore
       ./tsconfig.json
       ./src
       ./scripts
