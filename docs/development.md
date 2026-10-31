@@ -11,9 +11,19 @@ channels. Effect Schema decodes incoming boundaries, while report projection
 copies only its explicit output fields. Run Bun's strict type checker with
 `bun --no-env-file check`.
 
-The Nix flake packages the TypeScript source and production dependencies for
-offline runtime resolution. It supports `aarch64-darwin`, `aarch64-linux`, and
-`x86_64-linux`.
+The Nix flake uses the production dependencies from the offline bun2nix cache
+to compile `src/cli.ts` into a standalone Bun executable. It supports
+`aarch64-darwin`, `aarch64-linux`, and `x86_64-linux`. This is native
+compilation with `bun build --compile`, not native AOT; the packaged Bun
+version does not provide `--aot`.
+
+The compile disables `.env` and `bunfig.toml` autoloading so the executable
+does not read code configuration from its working directory. It does not
+inline environment values, so supported tokens remain available through the
+process environment. `dontStrip = true` is required because Bun appends the
+JavaScript payload to its executable and stripping it breaks the result.
+The compiler's runtime is already patched for Nix; ELF fixups are disabled on
+the completed executable as well.
 
 The runtime uses the latest stable Bun package from `github:ryoppippi/nix-bun`;
 its `nixpkgs` input follows this flake's `nixpkgs`. `flake.lock` pins the

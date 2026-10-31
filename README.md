@@ -4,7 +4,7 @@
 server. It subscribes to the server's read-only usage-limit streams and closes
 the connection after receiving their initial data.
 
-Run it with the Nix wrapper:
+Run it with Nix:
 
 ```sh
 gh-nix nix run github:ryoppippi/t3-limits -- --json
