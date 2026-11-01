@@ -77,3 +77,4 @@ revoked as soon as the reply arrives.
 ## Development
 
 `nix fmt` formats everything with treefmt; `nix flake check` checks formatting.
+Flake outputs are flake-parts modules under `nix/`.

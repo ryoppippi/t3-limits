@@ -3,6 +3,10 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    flake-parts = {
+      url = "github:hercules-ci/flake-parts";
+      inputs.nixpkgs-lib.follows = "nixpkgs";
+    };
     treefmt-nix = {
       url = "github:numtide/treefmt-nix";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -10,44 +14,19 @@
   };
 
   outputs =
-    {
-      self,
-      nixpkgs,
-      treefmt-nix,
-    }:
-    let
-      forAllSystems =
-        f:
-        nixpkgs.lib.genAttrs [
-          "aarch64-darwin"
-          "x86_64-darwin"
-          "aarch64-linux"
-          "x86_64-linux"
-        ] (system: f nixpkgs.legacyPackages.${system});
-      treefmt = forAllSystems (pkgs: treefmt-nix.lib.evalModule pkgs ./treefmt.nix);
-    in
-    {
-      packages = forAllSystems (pkgs: {
-        default = pkgs.writeShellApplication {
-          name = "t3-limits";
-          runtimeInputs = with pkgs; [
-            nushell
-            websocat
-          ];
-          text = ''exec nu ${./t3-limits.nu} "$@"'';
-        };
-      });
+    inputs@{ flake-parts, ... }:
+    flake-parts.lib.mkFlake { inherit inputs; } {
+      systems = [
+        "aarch64-darwin"
+        "x86_64-darwin"
+        "aarch64-linux"
+        "x86_64-linux"
+      ];
 
-      formatter = forAllSystems (pkgs: treefmt.${pkgs.stdenv.hostPlatform.system}.config.build.wrapper);
-
-      checks = forAllSystems (
-        pkgs:
-        let
-          inherit (pkgs.stdenv.hostPlatform) system;
-        in
-        {
-          formatting = treefmt.${system}.config.build.check self;
-        }
-      );
+      imports = [
+        inputs.treefmt-nix.flakeModule
+        ./nix/package.nix
+        ./nix/treefmt.nix
+      ];
     };
 }
