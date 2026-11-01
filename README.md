@@ -74,3 +74,13 @@ revoked as soon as the reply arrives.
 ]
 ```
 
+## Agent skill
+
+The package ships an [agent skill](https://github.com/agentskills/agentskills)
+at `share/skills/t3-limits/t3-limits/SKILL.md`, installed with nixpkgs'
+`installAgentSkills` hook. This is the layout
+[llm-agents.nix](https://github.com/numtide/llm-agents.nix) and nixpkgs use,
+so any skill registry that reads `share/skills` from a package, such as
+[agent-skills-nix](https://github.com/Kyure-A/agent-skills-nix), can pick it
+up by pointing at this flake's default package. The source lives in
+[skills/t3-limits/SKILL.md](skills/t3-limits/SKILL.md).
