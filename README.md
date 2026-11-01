@@ -16,8 +16,9 @@ MCP usage-limits tool ([PR #28212](https://github.com/pingdotgg/t3code/pull/2821
 
 1. Reads the server origin from `userdata/server-runtime.json` in the T3 Code
    data directory: `$T3CODE_HOME` when set, otherwise `~/.t3`.
-2. Issues a one-minute `orchestration:read` token with
-   `t3 auth session issue`, so the `t3` CLI must be on `PATH`.
+2. Issues a five-minute `orchestration:read` token with
+   `t3 auth session issue`, so the `t3` CLI must be on `PATH`. T3 closes the
+   socket when the session expires, so it must outlast a full refresh.
 3. Sends one `server.refreshProviders` request over the T3 WebSocket with
    `websocat` and prints each provider's usage windows from the reply.
 
@@ -35,8 +36,8 @@ they have no usage limits until its first probe finishes.
 snapshot for that provider).
 
 The token is passed to `websocat` as a command-line argument, so other local
-users can see it in the process list while the request runs; it expires after
-one minute.
+users can see it in the process list while the request runs. The session is
+revoked as soon as the reply arrives.
 
 ## JSON output
 

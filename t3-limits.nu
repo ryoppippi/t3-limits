@@ -5,17 +5,28 @@ def call-t3 [method: string]: nothing -> string {
     let base_dir = $env.T3CODE_HOME? | default ($env.HOME | path join .t3) | path expand
     let origin = open ($base_dir | path join userdata server-runtime.json) | get origin
     let url = $"($origin | str replace --regex '^http' 'ws')/ws?orchestrationProtocol=2"
-    let token = ^t3 auth session issue --base-dir $base_dir --scope orchestration:read --ttl 1m --label t3-limits --token-only | str trim
-    {
-        _tag: Request
-        id: "0"
-        tag: $method
-        payload: {}
-        headers: []
+    # T3 closes a socket when its session expires, so the TTL must outlast a full provider refresh.
+    let session = ^t3 auth session issue --base-dir $base_dir --scope orchestration:read --ttl 5m --label t3-limits --json | from json
+    let outcome = try {
+        let reply = {
+            _tag: Request
+            id: "0"
+            tag: $method
+            payload: {}
+            headers: []
+        }
+        | to json --raw
+        | $in + "\n"
+        | ^websocat --no-close --one-message --text --buffer-size 67108864 $url $"-H=Authorization: Bearer ($session.token)"
+        {reply: $reply}
+    } catch {|err|
+        {error: $err.msg}
     }
-    | to json --raw
-    | $in + "\n"
-    | ^websocat --no-close --one-message --text --buffer-size 67108864 $url $"-H=Authorization: Bearer ($token)"
+    ^t3 auth session revoke --base-dir $base_dir $session.sessionId | ignore
+    if "error" in $outcome {
+        error make {msg: $outcome.error}
+    }
+    $outcome.reply
 }
 
 def to-window []: record -> record {
