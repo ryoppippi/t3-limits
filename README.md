@@ -89,3 +89,8 @@ up by pointing at this flake's default package. The source lives in
 
 `nix fmt` formats everything with treefmt; `nix flake check` checks formatting.
 Flake outputs are flake-parts modules under `nix/`.
+
+Releases are cut by [tagpr](https://github.com/Songmu/tagpr): every push to
+`main` updates a release PR, and merging it tags the version in `version` and
+publishes a GitHub release. Add the `tagpr:minor` or `tagpr:major` label to
+the release PR to bump more than the patch version.

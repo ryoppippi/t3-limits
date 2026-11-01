@@ -1,0 +1,59 @@
+name: tagpr
+
+on:
+  push:
+    branches:
+      - main
+  # Toggling tagpr:minor / tagpr:major labels on the release PR should update
+  # its proposed version right away, instead of waiting for the next push to
+  # main to make tagpr recompute it.
+  pull_request:
+    types:
+      - labeled
+      - unlabeled
+  workflow_dispatch:
+
+concurrency: tagpr
+
+jobs:
+  tagpr:
+    # Label events only matter on tagpr's own release PR; skip the rest so
+    # ordinary PR labeling doesn't spend runner time.
+    if: github.event_name != 'pull_request' || startsWith(github.head_ref, 'tagpr-from-')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: read
+    outputs:
+      tag: ${{ steps.tagpr.outputs.tag }}
+      pull_request: ${{ steps.tagpr.outputs.pull_request }}
+    steps:
+      # persist-credentials stays on (default) so tagpr can push the release PR and tag
+      # ref: main because on pull_request events the default checkout is the
+      # PR merge ref, while tagpr always operates on the release branch.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+      - id: tagpr
+        uses: Songmu/tagpr@e1250d6c84e4425db82b5e90549d62dfe23e9ebe # v1.21.4
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Pushes made with GITHUB_TOKEN do not trigger pull_request workflows, so the
+  # release PR gets its CI run dispatched here.
+  ci:
+    needs: tagpr
+    if: needs.tagpr.outputs.tag == '' && needs.tagpr.outputs.pull_request != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Dispatch CI on the release branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_REF: ${{ fromJSON(needs.tagpr.outputs.pull_request).head.ref }}
+        run: gh workflow run ci.yaml --repo "$GITHUB_REPOSITORY" --ref "$HEAD_REF"
