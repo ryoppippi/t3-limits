@@ -2,7 +2,7 @@
 
 # Asks the running T3 server for its config once and returns the raw RPC reply.
 def fetch-config []: nothing -> string {
-    let base_dir = $env.HOME | path join .t3
+    let base_dir = $env.T3CODE_HOME? | default ($env.HOME | path join .t3) | path expand
     let origin = open ($base_dir | path join userdata server-runtime.json) | get origin
     let url = $"($origin | str replace --regex '^http' 'ws')/ws?orchestrationProtocol=2"
     let token = ^t3 auth session issue --base-dir $base_dir --scope orchestration:read --ttl 1m --label t3-limits --token-only | str trim

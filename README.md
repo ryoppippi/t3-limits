@@ -13,7 +13,8 @@ MCP usage-limits tool ([PR #28212](https://github.com/pingdotgg/t3code/pull/2821
 
 ## How it works
 
-1. Reads the server origin from `~/.t3/userdata/server-runtime.json`.
+1. Reads the server origin from `userdata/server-runtime.json` in the T3 Code
+   data directory: `$T3CODE_HOME` when set, otherwise `~/.t3`.
 2. Issues a one-minute `orchestration:read` token with
    `t3 auth session issue`, so the `t3` CLI must be on `PATH`.
 3. Sends one read-only `server.getConfig` request over the T3 WebSocket with
