@@ -1,6 +1,6 @@
 {
   perSystem =
-    { pkgs, ... }:
+    { pkgs, lib, ... }:
     let
       script = pkgs.writeShellApplication {
         name = "t3-limits";
@@ -24,7 +24,14 @@
           ln -s ${script}/bin/t3-limits $out/bin/t3-limits
           runHook postInstall
         '';
-        meta.mainProgram = "t3-limits";
+        meta = {
+          description = "Read AI provider usage limits from a running T3 Code server";
+          homepage = "https://github.com/ryoppippi/t3-limits";
+          license = lib.licenses.mit;
+          maintainers = [ lib.maintainers.ryoppippi ];
+          platforms = lib.platforms.unix;
+          mainProgram = "t3-limits";
+        };
       };
     };
 }

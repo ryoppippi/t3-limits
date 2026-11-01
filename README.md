@@ -84,8 +84,3 @@ so any skill registry that reads `share/skills` from a package, such as
 [agent-skills-nix](https://github.com/Kyure-A/agent-skills-nix), can pick it
 up by pointing at this flake's default package. The source lives in
 [skills/t3-limits/SKILL.md](skills/t3-limits/SKILL.md).
-
-## Development
-
-`nix fmt` formats everything with treefmt; `nix flake check` checks formatting.
-Flake outputs are flake-parts modules under `nix/`.
