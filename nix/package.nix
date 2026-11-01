@@ -14,7 +14,7 @@
     {
       packages.default = pkgs.stdenvNoCC.mkDerivation {
         pname = "t3-limits";
-        version = "0-unstable";
+        version = lib.trim (builtins.readFile ../version);
         src = ../skills;
         nativeBuildInputs = [ pkgs.installAgentSkills ];
         dontBuild = true;
