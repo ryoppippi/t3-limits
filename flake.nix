@@ -30,9 +30,9 @@
       packages = forAllSystems (pkgs: {
         default = pkgs.writeShellApplication {
           name = "t3-limits";
-          runtimeInputs = [
-            pkgs.nushell
-            pkgs.websocat
+          runtimeInputs = with pkgs; [
+            nushell
+            websocat
           ];
           text = ''exec nu ${./t3-limits.nu} "$@"'';
         };
