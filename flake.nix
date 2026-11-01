@@ -25,8 +25,13 @@
 
       imports = [
         inputs.treefmt-nix.flakeModule
-        ./nix/package.nix
         ./nix/treefmt.nix
       ];
+
+      perSystem =
+        { pkgs, ... }:
+        {
+          packages.default = pkgs.callPackage ./package.nix { };
+        };
     };
 }
