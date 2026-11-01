@@ -1,21 +1,32 @@
 #!/usr/bin/env nu
 
-# Asks the running T3 server for its config once and returns the raw RPC reply.
-def fetch-config []: nothing -> string {
+# Sends one RPC to the running T3 server and returns the raw reply.
+def call-t3 [method: string]: nothing -> string {
     let base_dir = $env.T3CODE_HOME? | default ($env.HOME | path join .t3) | path expand
     let origin = open ($base_dir | path join userdata server-runtime.json) | get origin
     let url = $"($origin | str replace --regex '^http' 'ws')/ws?orchestrationProtocol=2"
-    let token = ^t3 auth session issue --base-dir $base_dir --scope orchestration:read --ttl 1m --label t3-limits --token-only | str trim
-    {
-        _tag: Request
-        id: "0"
-        tag: server.getConfig
-        payload: {}
-        headers: []
+    # T3 closes a socket when its session expires, so the TTL must outlast a full provider refresh.
+    let session = ^t3 auth session issue --base-dir $base_dir --scope orchestration:read --ttl 5m --label t3-limits --json | from json
+    let outcome = try {
+        let reply = {
+            _tag: Request
+            id: "0"
+            tag: $method
+            payload: {}
+            headers: []
+        }
+        | to json --raw
+        | $in + "\n"
+        | ^websocat --no-close --one-message --text --buffer-size 67108864 $url $"-H=Authorization: Bearer ($session.token)"
+        {reply: $reply}
+    } catch {|err|
+        {error: $err.msg}
     }
-    | to json --raw
-    | $in + "\n"
-    | ^websocat --no-close --one-message --text --buffer-size 67108864 $url $"-H=Authorization: Bearer ($token)"
+    ^t3 auth session revoke --base-dir $base_dir $session.sessionId | ignore
+    if "error" in $outcome {
+        error make {msg: $outcome.error}
+    }
+    $outcome.reply
 }
 
 def to-window []: record -> record {
@@ -74,17 +85,19 @@ def to-rows []: record -> list<record> {
 # Read AI provider usage limits from the running T3 Code server.
 def main [
     --json # Print JSON instead of a table
+    --cached # Read T3's last snapshots instead of refreshing providers first
 ] {
-    let reply = fetch-config | from json
-    let config = match $reply {
-        {_tag: Exit, exit: {_tag: Success, value: $value}} => $value
+    let method = if $cached { "server.getConfig" } else { "server.refreshProviders" }
+    let reply = call-t3 $method | from json
+    let providers = match $reply {
+        {_tag: Exit, exit: {_tag: Success, value: {providers: $providers}}} => $providers
         _ => (
             error make {
-                msg: "T3 server did not return its config; is T3 Code running and are you signed in?"
+                msg: $"T3 server did not answer ($method); is T3 Code running and are you signed in?"
             }
         )
     }
-    let report = $config.providers | each { to-provider }
+    let report = $providers | each { to-provider }
     if $json {
         $report | to json
     } else {
