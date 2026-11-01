@@ -1,6 +1,6 @@
 ---
 name: t3-limits
-description: Read AI provider usage limits (Claude, Codex, Cursor, ...) from a running T3 Code server. Use when asked how much of a provider quota is left, when a usage window resets, or whether a provider is rate limited.
+description: When asked how much of an AI provider quota (Claude, Codex, Cursor, ...) is left, when a usage window resets, whether a provider is rate limited, or before starting work that will use a lot of a provider's quota, while T3 Code is running.
 ---
 
 # t3-limits
